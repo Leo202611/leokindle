@@ -5,7 +5,7 @@ Kindle 8 (800x600) 日历 + 天气仪表盘渲染器
 地区：江苏泰州  数据源：Open-Meteo（免密钥）
 输出：8-bit 灰度 PNG，供 Kindle 用 eips -f -g 全屏显示
 """
-import json, urllib.request, datetime, sys, os
+import json, urllib.request, urllib.parse, datetime, sys, os
 from PIL import Image, ImageDraw, ImageFont
 from lunardate import LunarDate
 
@@ -17,9 +17,99 @@ except Exception:
     TZLOCAL = datetime.timezone(datetime.timedelta(hours=8))
 
 W, H = 800, 600
-LAT, LON = 32.4927, 119.9152          # 江苏泰州
-CITY = "江苏泰州"
 TZ = "Asia%2FShanghai"
+
+# ---------------------------------------------------------------------------
+# 位置：不在代码里写死任何城市。
+# 解析优先级：环境变量 > location.json（由 locate.py 在设备上自动生成）
+#             > 运行时 IP 定位（兜底，精度可能只到地级市/出口节点）
+# ---------------------------------------------------------------------------
+DEFAULT_LOCATION = {"city": "", "region": "", "lat": None, "lon": None, "source": ""}
+
+
+def _http_json(url, timeout=20):
+    req = urllib.request.Request(url, headers={"User-Agent": "kindle-dash/1.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.load(r)
+
+
+def geocode(city, region=""):
+    """城市名 -> (标准中文名, 省, 纬, 经)。Open-Meteo 对中文名支持差，故拼音兜底。"""
+    import unicodedata
+    def to_pinyin(s):
+        try:
+            from pypinyin import lazy_pinyin          # 有则精确转写
+            return "".join(lazy_pinyin(s))
+        except Exception:
+            return ""                                  # 无则试原名
+    queries = []
+    py = to_pinyin(city)
+    if py:
+        queries.append(py)
+    queries.append(city)
+    for q in queries:
+        try:
+            url = ("https://geocoding-api.open-meteo.com/v1/search?name=%s&count=20"
+                   "&language=zh&format=json" % urllib.parse.quote(q))
+            d = _http_json(url)
+            res = d.get("results") or []
+            # 优先匹配指定省
+            for r in res:
+                if region and r.get("admin1") and region.rstrip("省市区") in str(r.get("admin1")):
+                    return str(r.get("name")), str(r.get("admin1") or ""), r["latitude"], r["longitude"]
+            for r in res:
+                if not region:
+                    return str(r.get("name")), str(r.get("admin1") or ""), r["latitude"], r["longitude"]
+        except Exception:
+            continue
+    return None
+
+
+def ip_locate():
+    """按出口 IP 定位（中文），返回 (城市, 省, 纬, 经)"""
+    try:
+        d = _http_json("http://ip-api.com/json/?lang=zh-CN")
+        if d.get("status") == "success":
+            return (str(d.get("city") or ""), str(d.get("regionName") or ""),
+                    d.get("lat"), d.get("lon"))
+    except Exception:
+        pass
+    return None
+
+
+def resolve_location():
+    loc = dict(DEFAULT_LOCATION)
+    here = os.path.dirname(os.path.abspath(__file__))
+
+    # 1) 环境变量 / 命令行覆盖
+    if os.environ.get("DASH_LAT") and os.environ.get("DASH_LON"):
+        loc.update(city=os.environ.get("DASH_CITY", ""), region=os.environ.get("DASH_REGION", ""),
+                   lat=float(os.environ["DASH_LAT"]), lon=float(os.environ["DASH_LON"]),
+                   source="env")
+        return loc
+
+    # 2) location.json（由 locate.py 生成并提交到仓库）
+    for p in (os.path.join(here, "location.json"), "/mnt/us/dash/location.json"):
+        try:
+            with open(p, encoding="utf-8") as f:
+                j = json.load(f)
+            if j.get("lat") is not None and j.get("lon") is not None:
+                loc.update(city=j.get("city", ""), region=j.get("region", ""),
+                           lat=float(j["lat"]), lon=float(j["lon"]),
+                           source=j.get("source", "location.json"))
+                return loc
+        except Exception:
+            continue
+
+    # 3) 兜底：运行时 IP 定位
+    got = ip_locate()
+    if got and got[2] is not None:
+        loc.update(city=got[0], region=got[1], lat=float(got[2]), lon=float(got[3]),
+                   source="ip-api.com(自动)")
+    return loc
+
+
+LOCATION = None   # 延迟到 main 里解析，避免导入时就联网
 
 def _find_font(cands, globs):
     import glob as _g
@@ -178,11 +268,21 @@ def greeting(h):
 
 
 # ---------- 取数据 ----------
+def _ensure_location():
+    global LOCATION
+    if LOCATION is None:
+        LOCATION = resolve_location()
+    if LOCATION.get("lat") is None or LOCATION.get("lon") is None:
+        raise RuntimeError("无法确定位置：请提供 location.json 或设置 DASH_LAT/DASH_LON")
+    return LOCATION
+
+
 def fetch():
+    _ensure_location()
     url = ("https://api.open-meteo.com/v1/forecast?latitude=%s&longitude=%s"
            "&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,wind_direction_10m"
            "&daily=weather_code,temperature_2m_max,temperature_2m_min"
-           "&timezone=%s&forecast_days=5" % (LAT, LON, TZ))
+           "&timezone=%s&forecast_days=5" % (LOCATION["lat"], LOCATION["lon"], TZ))
     req = urllib.request.Request(url, headers={"User-Agent": "kindle-dash/1.0"})
     with urllib.request.urlopen(req, timeout=20) as r:
         return json.load(r)
@@ -190,6 +290,7 @@ def fetch():
 
 # ---------- 渲染 ----------
 def render(data, out):
+    _ensure_location()
     now = datetime.datetime.now(TZLOCAL)
     img = Image.new("L", (W, H), WHITE)
     d = ImageDraw.Draw(img)
@@ -201,7 +302,7 @@ def render(data, out):
     temp = cur["temperature_2m"]
 
     # 顶部：城市 + 问候语 | 时间
-    d.text((30, 24), CITY, font=font(FONT_BOLD, 30), fill=BLACK)
+    d.text((30, 24), city_label(), font=font(FONT_BOLD, 30), fill=BLACK)
     d.text((32, 64), greeting(now.hour) + "，祝你今天顺利", font=font(FONT_REG, 20), fill=GRAY)
     t = now.strftime("%H:%M")
     fbig = font(FONT_BOLD, 40)
@@ -266,7 +367,19 @@ def render(data, out):
     return out
 
 
+def city_label():
+    """显示用城市名，如「江苏泰州」"""
+    c = (LOCATION.get("city") or "").replace("市", "").replace("自治州", "")
+    r = (LOCATION.get("region") or "").replace("省", "").replace("市", "")
+    if r and c and not c.startswith(r):
+        return r + c
+    return c or r or "未知位置"
+
+
 if __name__ == "__main__":
+    LOCATION = resolve_location()
+    print("位置: %s (%s, %s) 来源=%s" % (city_label(), LOCATION.get("lat"),
+          LOCATION.get("lon"), LOCATION.get("source")))
     data = fetch()
     out = sys.argv[1] if len(sys.argv) > 1 else "dash.png"
     render(data, out)
