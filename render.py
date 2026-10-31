@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Kindle 8 (800x600) 日历 + 天气仪表盘渲染器
-地区：江苏泰州  数据源：Open-Meteo（免密钥）
+数据源：Open-Meteo（免密钥）
 输出：8-bit 灰度 PNG，供 Kindle 用 eips -f -g 全屏显示
 """
 import json, urllib.request, urllib.parse, datetime, sys, os
