@@ -281,30 +281,60 @@ def fetch():
     _ensure_location()
     url = ("https://api.open-meteo.com/v1/forecast?latitude=%s&longitude=%s"
            "&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,wind_direction_10m"
+           "&hourly=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,wind_direction_10m"
            "&daily=weather_code,temperature_2m_max,temperature_2m_min"
-           "&timezone=%s&forecast_days=5" % (LOCATION["lat"], LOCATION["lon"], TZ))
+           "&timezone=%s&forecast_days=6" % (LOCATION["lat"], LOCATION["lon"], TZ))
     req = urllib.request.Request(url, headers={"User-Agent": "kindle-dash/1.0"})
     with urllib.request.urlopen(req, timeout=20) as r:
         return json.load(r)
 
 
+def pick_hourly(data, at):
+    """取逐小时预报中 at 这一整点的一组值；取不到就返回 None（退回 current）。"""
+    h = data.get("hourly") or {}
+    times = h.get("time") or []
+    key = at.strftime("%Y-%m-%dT%H:00")
+    if key not in times:
+        return None
+    i = times.index(key)
+    out = {}
+    for k, v in h.items():
+        if k == "time":
+            continue
+        out[k] = v[i] if isinstance(v, list) and i < len(v) else None
+    return out
+
+
+def daily_index(daily, d):
+    """按日期在 daily 数组里定位；找不到返回 None。"""
+    times = (daily or {}).get("time") or []
+    try:
+        return times.index(d.isoformat())
+    except Exception:
+        return None
+
+
 # ---------- 渲染 ----------
-def render(data, out):
+def render(data, out, at=None):
+    """at 为 None 表示渲染"此刻"；传入 datetime 则渲染该整点（用于批量预生成）。"""
     _ensure_location()
     now = datetime.datetime.now(TZLOCAL)
+    at = at or now
     img = Image.new("L", (W, H), WHITE)
     d = ImageDraw.Draw(img)
 
-    cur = data["current"]
     daily = data["daily"]
-    code = cur["weather_code"]
+    cur = pick_hourly(data, at) or data["current"]
+    code = cur.get("weather_code")
     desc, kind = WMO.get(code, ("未知", "cloud"))
-    temp = cur["temperature_2m"]
+    temp = cur.get("temperature_2m")
+    if temp is None:
+        temp = data["current"].get("temperature_2m", 0)
 
     # 顶部：城市 + 问候语 | 时间
     d.text((30, 24), city_label(), font=font(FONT_BOLD, 30), fill=BLACK)
-    d.text((32, 64), greeting(now.hour) + "，祝你今天顺利", font=font(FONT_REG, 20), fill=GRAY)
-    t = now.strftime("%H:%M")
+    d.text((32, 64), greeting(at.hour) + "，祝你今天顺利", font=font(FONT_REG, 20), fill=GRAY)
+    t = at.strftime("%H:%M")
     fbig = font(FONT_BOLD, 40)
     d.text((W - 30 - d.textlength(t, font=fbig), 24), t, font=fbig, fill=BLACK)
 
@@ -330,29 +360,32 @@ def render(data, out):
     d.line([(400, 120), (400, 380)], fill=LGRAY, width=2)
 
     # 右：日历
-    d.text((424, 126), "%d年%d月" % (now.year, now.month), font=font(FONT_REG, 24), fill=GRAY)
+    d.text((424, 126), "%d年%d月" % (at.year, at.month), font=font(FONT_REG, 24), fill=GRAY)
     fday = font(FONT_BOLD, 132)
-    ds = str(now.day)
+    ds = str(at.day)
     d.text((424, 150), ds, font=fday, fill=BLACK)
     dw = d.textlength(ds, font=fday)
     d.text((424 + dw + 8, 162), "日", font=font(FONT_REG, 30), fill=GRAY)
-    d.text((424, 300), WEEK[now.weekday()], font=font(FONT_BOLD, 30), fill=BLACK)
-    d.text((424, 344), lunar_str(now.date()), font=font(FONT_REG, 23), fill=BLACK)
-    st = solar_term_of(now.date())
+    d.text((424, 300), WEEK[at.weekday()], font=font(FONT_BOLD, 30), fill=BLACK)
+    d.text((424, 344), lunar_str(at.date()), font=font(FONT_REG, 23), fill=BLACK)
+    st = solar_term_of(at.date())
     if st:
         d.text((424, 380), "今日 " + st, font=font(FONT_REG, 21), fill=GRAY)
 
     d.line([(30, 412), (W - 30, 412)], fill=LGRAY, width=2)
 
-    # 底部：未来三天
+    # 底部：未来三天（按 at 所在日期往后推，跨天也不会错位）
     cols = [(110, 1), (400, 2), (690, 3)]
     for cx, off in cols:
+        dd = at.date() + datetime.timedelta(days=off)
+        i = daily_index(daily, dd)
+        if i is None:
+            continue
         try:
-            dd = datetime.date.fromisoformat(daily["time"][off])
-            c2 = daily["weather_code"][off]
+            c2 = daily["weather_code"][i]
             dh, dk = WMO.get(c2, ("未知", "cloud"))
-            hi = daily["temperature_2m_max"][off]
-            lo = daily["temperature_2m_min"][off]
+            hi = daily["temperature_2m_max"][i]
+            lo = daily["temperature_2m_min"][i]
         except Exception:
             continue
         label = ("明天" if off == 1 else WEEK[dd.weekday()])
@@ -361,7 +394,8 @@ def render(data, out):
         d.text((cx, 520), "%d°/%d°" % (round(hi), round(lo)), font=font(FONT_REG, 23), fill=BLACK, anchor="mm")
         d.text((cx, 552), dh, font=font(FONT_REG, 19), fill=GRAY, anchor="mm")
 
-    d.text((32, 582), "更新 " + now.strftime("%H:%M"), font=font(FONT_REG, 15), fill=LGRAY, anchor="ls")
+    d.text((32, 582), "更新 " + at.strftime("%m-%d %H:%M"),
+           font=font(FONT_REG, 15), fill=LGRAY, anchor="ls")
 
     img.save(out, "PNG")
     return out
@@ -377,11 +411,36 @@ def city_label():
 
 
 if __name__ == "__main__":
+    import argparse
+
+    ap = argparse.ArgumentParser(description="Kindle 日历天气仪表盘渲染器")
+    ap.add_argument("out", nargs="?", default="dash.png", help="单张输出文件名")
+    ap.add_argument("--hours", type=int, default=0,
+                    help="批量模式：从当前整点起生成 N 张逐小时图")
+    ap.add_argument("--outdir", default=".", help="批量模式输出目录")
+    args = ap.parse_args()
+
     LOCATION = resolve_location()
     print("位置: %s (%s, %s) 来源=%s" % (city_label(), LOCATION.get("lat"),
           LOCATION.get("lon"), LOCATION.get("source")))
     data = fetch()
-    out = sys.argv[1] if len(sys.argv) > 1 else "dash.png"
-    render(data, out)
-    print("OK ->", os.path.abspath(out), "| 当前 %s°C %s" % (data["current"]["temperature_2m"],
+    print("当前实况: %s°C %s" % (data["current"]["temperature_2m"],
           WMO.get(data["current"]["weather_code"], ("?",))[0]))
+
+    if args.hours > 0:
+        base = datetime.datetime.now(TZLOCAL).replace(minute=0, second=0, microsecond=0)
+        os.makedirs(args.outdir, exist_ok=True)
+        names = []
+        for k in range(args.hours):
+            at = base + datetime.timedelta(hours=k)
+            fn = os.path.join(args.outdir, at.strftime("%Y%m%d_%H") + ".png")
+            render(data, fn, at)
+            names.append(os.path.basename(fn))
+        # 索引文件：Kindle 抓不到目标图时可据此挑最近的一张
+        with open(os.path.join(args.outdir, "index.txt"), "w", encoding="utf-8") as f:
+            f.write("\n".join(names) + "\n")
+        print("批量生成 %d 张 -> %s" % (len(names), os.path.abspath(args.outdir)))
+        print("区间: %s ~ %s" % (names[0], names[-1]))
+    else:
+        render(data, args.out)
+        print("OK ->", os.path.abspath(args.out))
