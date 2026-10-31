@@ -1,0 +1,47 @@
+name: Render Kindle Dashboard
+
+on:
+  schedule:
+    # 每 30 分钟渲染一次（UTC 时间，实际执行可能有几分钟延迟）
+    - cron: "*/30 * * * *"
+  workflow_dispatch:   # 允许手动点一次立刻生成
+  push:
+    branches: [main]
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装中文字体
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq fonts-noto-cjk
+          fc-list 2>/dev/null | grep -i "noto.*cjk" | head -3 || echo "(fc-list 不可用，继续)"
+
+      - name: 安装依赖
+        run: pip install -q -r requirements.txt
+
+      - name: 渲染图片
+        run: |
+          python3 render.py dash.png
+          ls -l dash.png
+
+      - name: 发布到 dash 分支（每次强制覆盖，历史只保留 1 个提交）
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan dash_tmp
+          git rm -rf --cached . >/dev/null 2>&1 || true
+          git add -f dash.png
+          git commit -m "dash $(date -u +'%Y-%m-%dT%H:%MZ')"
+          git push -f origin dash_tmp:dash
