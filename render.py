@@ -9,6 +9,13 @@ import json, urllib.request, datetime, sys, os
 from PIL import Image, ImageDraw, ImageFont
 from lunardate import LunarDate
 
+# GitHub Actions 等云端服务器用的是 UTC，必须显式按北京时间取"现在"
+try:
+    from zoneinfo import ZoneInfo
+    TZLOCAL = ZoneInfo("Asia/Shanghai")
+except Exception:
+    TZLOCAL = datetime.timezone(datetime.timedelta(hours=8))
+
 W, H = 800, 600
 LAT, LON = 32.4927, 119.9152          # 江苏泰州
 CITY = "江苏泰州"
@@ -183,7 +190,7 @@ def fetch():
 
 # ---------- 渲染 ----------
 def render(data, out):
-    now = datetime.datetime.now()
+    now = datetime.datetime.now(TZLOCAL)
     img = Image.new("L", (W, H), WHITE)
     d = ImageDraw.Draw(img)
 
