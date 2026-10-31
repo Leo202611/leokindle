@@ -2,17 +2,25 @@ name: Render Kindle Dashboard
 
 on:
   schedule:
-    # 每 30 分钟渲染一次（UTC 时间，实际执行可能有几分钟延迟）
-    - cron: "*/30 * * * *"
+    # 每 3 小时跑一次（UTC）。生成未来 26 小时、按整点命名的图，
+    # Kindle 按本地时间挑对应那张下载，因此时钟始终精确到小时。
+    - cron: "17 */3 * * *"
   workflow_dispatch:   # 允许手动点一次立刻生成
   push:
     branches: [main]
 
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "kindle-dash"
+  cancel-in-progress: false
+
 jobs:
   render:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -31,17 +39,45 @@ jobs:
       - name: 安装依赖
         run: pip install -q -r requirements.txt
 
-      - name: 渲染图片
+      - name: 批量渲染逐小时图
         run: |
-          python3 render.py dash.png
-          ls -l dash.png
+          mkdir -p out
+          python3 render.py --hours 26 --outdir out
+          echo "---- 产物 ----"
+          ls -l out | head -8
+          cat out/index.txt | head -3
+          echo "..."
+          cat out/index.txt | tail -2
 
-      - name: 发布到 dash 分支（每次强制覆盖，历史只保留 1 个提交）
+      - name: 配置 Pages（未开通时会自动开通）
+        id: pages_conf
+        uses: actions/configure-pages@v5
+        continue-on-error: true
+
+      - name: 上传 Pages 产物
+        uses: actions/upload-pages-artifact@v3
+        continue-on-error: true
+        with:
+          path: out
+
+      - name: 部署 Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+        continue-on-error: true
+
+      - name: 同步到 dash 分支（jsDelivr 备用通道）
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout --orphan dash_tmp
           git rm -rf --cached . >/dev/null 2>&1 || true
-          git add -f dash.png
+          cp out/*.png out/index.txt .
+          git add -f *.png index.txt
           git commit -m "dash $(date -u +'%Y-%m-%dT%H:%MZ')"
           git push -f origin dash_tmp:dash
+
+      - name: 汇总
+        run: |
+          echo "Pages URL: ${{ steps.deployment.outputs.page_url }}"
+          echo "主通道: ${{ steps.deployment.outputs.page_url }}/$(head -1 out/index.txt)"
+          echo "备用通道: https://gcore.jsdelivr.net/gh/Leo202611/leokindle@dash/$(head -1 out/index.txt)"
