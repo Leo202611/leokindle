@@ -9,6 +9,11 @@ import json, urllib.request, urllib.parse, datetime, sys, os
 from PIL import Image, ImageDraw, ImageFont
 from lunardate import LunarDate
 
+try:
+    from zodiac import draw_zodiac
+except ImportError:      # 单文件运行时兜底
+    draw_zodiac = None
+
 # GitHub Actions 等云端服务器用的是 UTC，必须显式按北京时间取"现在"
 try:
     from zoneinfo import ZoneInfo
@@ -254,6 +259,34 @@ WEEK = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期
 GAN = "甲乙丙丁戊己庚辛壬癸"
 ZHI = "子丑寅卯辰巳午未申酉戌亥"
 SHENG = "鼠牛虎兔龙蛇马羊猴鸡狗猪"
+
+# 十二地支 -> 生肖（用于"日支生肖"）
+ZHI_SHENG = dict(zip(ZHI, SHENG))
+
+
+def jdn(y, m, d):
+    """公历 -> 儒略日数。"""
+    a = (14 - m) // 12
+    yy = y + 4800 - a
+    mm = m + 12 * a - 3
+    return d + (153 * mm + 2) // 5 + 365 * yy + yy // 4 - yy // 100 + yy // 400 - 32045
+
+
+def ganzhi_of_day(d):
+    """公历日 -> 日干支。
+
+    公式 index = (JDN + 49) % 60，0 = 甲子。
+    已用公认锚点校验：2000-01-01 = 戊午、1949-10-01 = 甲子。
+    """
+    idx = (jdn(d.year, d.month, d.day) + 49) % 60
+    return GAN[idx % 10] + ZHI[idx % 12]
+
+
+def zodiac_of_day(d):
+    """公历日 -> (生肖, 日干支)。所谓"生肖日"即日支所主的生肖。"""
+    gz = ganzhi_of_day(d)
+    return ZHI_SHENG[gz[1]], gz
+
 
 
 def _lunar_new_year(y):
@@ -565,34 +598,35 @@ def render(data, out, at=None):
     d.line([(312, 112), (312, 396)], fill=LGRAY, width=2)
 
     # 右：日历
-    # 之前右栏只有几行、内容全部靠左，大号日号右边空一大块，
-    # 视觉密度明显比不过左栏（温度/湿度/风/降水）。
-    # 现在改成：每一行都排成「左信息 + 右信息」两段，左右两端都抵到栏边，
-    # 与左栏的饱满度对齐。段与段之间用 draw_pair 量宽避让，绝不重叠。
-    # 顶栏已单列显示过干支纪年与生肖，所以这里不再重复「丙午年·马」。
+    # 用户反馈"距离什么多少天、还有多少周不好看"，已把倒计时类信息全部撤掉，
+    # 改回简洁的日历信息；原来空出来的那块留白用来放**当天的生肖形象**。
+    #
+    # 生肖日 = 日支所主的生肖，用干支纪日精确计算（见 zodiac_of_day）。
+    # 例如 2026-11-04 是壬午日，午对应马，就是马日。
     d.text((332, 112), "%d年%d月" % (at.year, at.month),
            font=font(FONT_REG, 26), fill=GRAY)
-    d.text((RIGHT, 114), "第%d周" % at.isocalendar()[1],
-           font=font(FONT_REG, 22), fill=GRAY, anchor="ra")
     fday = font(FONT_BOLD, 142)
     ds = str(at.day)
     # 星期与日号同一行、右对齐，把大号数字右侧的空白吃掉
     big_day(d, 332, 142, ds, fday, font(FONT_REG, 34),
             WEEK[at.weekday()], font(FONT_BOLD, 36), RIGHT)
     st = solar_term_of(at.date())
-    nxt = next_solar_term(at.date())
-    # 农历行：右端补节气信息（今天是节气就显示「今日 XX」，
-    # 否则显示下一个节气的倒计时），避免非节气日右端整块空着
-    draw_pair(d, 332, RIGHT, 296,
-              lunar_str(at.date()), 26,
-              ("今日 " + st) if st else ("距%s还有%d天" % (nxt[0], nxt[1])),
-              22, lfill=BLACK, rfill=GRAY)
-    doy = at.timetuple().tm_yday
-    left_days = (datetime.date(at.year + 1, 1, 1) - at.date()).days
-    draw_pair(d, 332, RIGHT, 340,
-              "今年第%d天" % doy, 21,
-              "距年底还有%d天" % left_days, 21,
-              lfill=GRAY, rfill=GRAY)
+    # 农历行：右边是节气（今天是节气就显示「今日 XX」），没有就留空
+    if st:
+        draw_pair(d, 332, RIGHT, 296, lunar_str(at.date()), 26,
+                  "今日 " + st, 22, lfill=BLACK, rfill=GRAY)
+    else:
+        d.text((332, 296), lunar_str(at.date()),
+               font=font(FONT_REG, 26), fill=BLACK)
+
+    # 生肖日：卡通形象 + 日干支，占掉原来倒计时那块的留白
+    zod, day_gz = zodiac_of_day(at.date())
+    if draw_zodiac:
+        # 居中放在右栏剩余空间里；马的吻部朝左会向左伸出，
+        # 所以整体再往右挪一点，避免压到中缝线。
+        draw_zodiac(d, zod, RIGHT - 48, 344, 90)
+    d.text((332, 338), "%s日" % day_gz, font=font(FONT_BOLD, 22), fill=BLACK)
+    d.text((332, 368), "生肖 %s" % zod, font=font(FONT_REG, 19), fill=GRAY)
 
     d.line([(M, 412), (RIGHT, 412)], fill=LGRAY, width=2)
 
@@ -796,24 +830,25 @@ def render_landscape(data, out, at=None):
     d.text((392, 90), "日历", font=font(FONT_REG, 18), fill=GRAY)
     st = solar_term_of(at.date())
     nxt = next_solar_term(at.date())
-    draw_pair(d, 392, RIGHT, 112,
-              "%d年%d月" % (at.year, at.month), 22,
-              "第%d周" % at.isocalendar()[1], 19,
-              lfill=GRAY, rfill=GRAY)
+    d.text((392, 112), "%d年%d月" % (at.year, at.month),
+           font=font(FONT_REG, 22), fill=GRAY)
     fday = font(FONT_BOLD, 88)
     ds = str(at.day)
     big_day(d, 392, 134, ds, fday, font(FONT_REG, 26),
             WEEK[at.weekday()], font(FONT_BOLD, 28), RIGHT, sep_gap=6)
-    draw_pair(d, 392, RIGHT, 238,
-              lunar_str(at.date()), 21,
-              ("今日 " + st) if st else ("距%s还有%d天" % (nxt[0], nxt[1])),
-              18, lfill=BLACK, rfill=GRAY)
-    doy = at.timetuple().tm_yday
-    left_days = (datetime.date(at.year + 1, 1, 1) - at.date()).days
-    draw_pair(d, 392, RIGHT, 272,
-              "今年第%d天" % doy, 17,
-              "距年底还有%d天" % left_days, 17,
-              lfill=GRAY, rfill=GRAY)
+    if st:
+        draw_pair(d, 392, RIGHT, 238, lunar_str(at.date()), 21,
+                  "今日 " + st, 18, lfill=BLACK, rfill=GRAY)
+    else:
+        d.text((392, 238), lunar_str(at.date()),
+               font=font(FONT_REG, 21), fill=BLACK)
+
+    # 生肖日：卡通形象 + 日干支（与竖屏同一套逻辑）
+    zod, day_gz = zodiac_of_day(at.date())
+    if draw_zodiac:
+        draw_zodiac(d, zod, RIGHT - 56, 268, 118)
+    d.text((392, 262), "%s日" % day_gz, font=font(FONT_BOLD, 21), fill=BLACK)
+    d.text((392, 290), "生肖 %s" % zod, font=font(FONT_REG, 18), fill=GRAY)
 
     d.line([(M, 336), (RIGHT, 336)], fill=LGRAY, width=2)
 
