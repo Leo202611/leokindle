@@ -342,11 +342,14 @@ def font(path, size):
 
 
 def big_day(d, x, y, ds, fday, day_font, week_text, week_font,
-            right_x, sep="日", sep_gap=8):
-    """画大号日号 + 「日」 + 右对齐的星期，三者视觉垂直居中于同一行。
+            right_x, sep="日", sep_gap=8, week_after_sep=False):
+    """画大号日号 + 「日」 + 星期，三者视觉垂直居中于同一行。
 
     大数字高度（142px）与小字（34/36px）差很多，若都按同一基线画，
     小字会明显偏上；这里按各自字形 bbox 求中心线来对齐。
+
+    week_after_sep=True 时星期紧跟在「日」后面（横屏用：右栏宽，
+    星期若右对齐会和右下角的生肖剪影撞上）；否则右对齐到 right_x。
     """
     b = d.textbbox((0, 0), ds, font=fday, anchor="la")
     center = y + (b[1] + b[3]) / 2.0
@@ -356,8 +359,14 @@ def big_day(d, x, y, ds, fday, day_font, week_text, week_font,
     d.text((x + dw + sep_gap, center - (bs[1] + bs[3]) / 2.0), sep,
            font=day_font, fill=GRAY, anchor="la")
     bw = d.textbbox((0, 0), week_text, font=week_font, anchor="la")
-    d.text((right_x, center - (bw[1] + bw[3]) / 2.0), week_text,
-           font=week_font, fill=BLACK, anchor="ra")
+    if week_after_sep:
+        sw = d.textlength(sep, font=day_font)
+        d.text((x + dw + sep_gap + sw + sep_gap + 4,
+                center - (bw[1] + bw[3]) / 2.0), week_text,
+               font=week_font, fill=BLACK, anchor="la")
+    else:
+        d.text((right_x, center - (bw[1] + bw[3]) / 2.0), week_text,
+               font=week_font, fill=BLACK, anchor="ra")
 
 
 # ---------- 图标绘制 ----------
@@ -826,20 +835,27 @@ def render_landscape(data, out, at=None):
     st = solar_term_of(at.date())
     d.text((392, 112), "%d年%d月" % (at.year, at.month),
            font=font(FONT_REG, 22), fill=GRAY)
+    # 节气放首行右端（与竖屏统一），避免和右下角的剪影抢位置
+    if st:
+        f_tm = font(FONT_REG, 18)
+        dy = (d.textbbox((0, 0), "年月", font=font(FONT_REG, 22))[3]
+              - d.textbbox((0, 0), "今日", font=f_tm)[3])
+        tw = d.textlength("今日 " + st, font=f_tm)
+        d.text((RIGHT - tw, 112 + dy), "今日 " + st, font=f_tm, fill=GRAY)
     fday = font(FONT_BOLD, 88)
     ds = str(at.day)
+    # 横屏右栏宽 382，星期紧跟「日」而不是右对齐——右对齐会压到剪影
     big_day(d, 392, 134, ds, fday, font(FONT_REG, 26),
-            WEEK[at.weekday()], font(FONT_BOLD, 28), RIGHT, sep_gap=6)
-    # 农历行；右邻一格放"今日 XX"节气，再往右是生肖剪影
+            WEEK[at.weekday()], font(FONT_BOLD, 28), RIGHT, sep_gap=6,
+            week_after_sep=True)
+    # 农历行
     d.text((392, 236), lunar_str(at.date()), font=font(FONT_REG, 21), fill=BLACK)
-    if st:
-        d.text((392 + 138, 238), "今日 " + st, font=font(FONT_REG, 18), fill=GRAY)
 
     # 生肖日：剪影 + 日干支 + 生肖名
     zod, day_gz = zodiac_of_day(at.date())
     if draw_zodiac:
-        # 横屏右栏宽 382，剪影外接框 130，占 x 629~759、y 201~331
-        draw_zodiac(img, d, zod, RIGHT - 80, 266, 130)
+        # 剪影外接框 130，独占右栏右下角（x 620~750 / y 201~331）
+        draw_zodiac(img, d, zod, 685, 266, 130)
     d.text((392, 268), "%s日" % day_gz, font=font(FONT_BOLD, 21), fill=BLACK)
     d.text((392, 296), "生肖 %s" % zod, font=font(FONT_REG, 18), fill=GRAY)
 
