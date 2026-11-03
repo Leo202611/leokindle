@@ -248,6 +248,67 @@ def draw_icon(d, kind, cx, cy, r, col=BLACK):
             d.line([cx - r * 0.75, y, cx + r * 0.75, y], fill=col, width=max(2, int(r * 0.09)))
 
 
+def draw_curve(d, data, at, x0, y0, w, h):
+    """未来 12 小时气温折线。返回 True 表示画成功（数据不足时返回 False）。
+
+    区域左上角 (x0,y0)，宽 w 高 h。顶部留 20px 给温度标注，底部留 16px 给小时刻度。
+    e-ink 灰度层次少，所以线画粗（3px）、节点画实心圆，避免浅色线条看不清。
+    """
+    hd = data.get("hourly") or {}
+    times = hd.get("time") or []
+    temps = hd.get("temperature_2m") or []
+    key = at.strftime("%Y-%m-%dT%H:00")
+    if key not in times:
+        return False
+    i0 = times.index(key)
+    vals, hrs = [], []
+    for k in range(12):
+        i = i0 + k
+        if i >= len(temps) or temps[i] is None:
+            break
+        vals.append(float(temps[i]))
+        hrs.append(int(times[i][11:13]))
+    if len(vals) < 3:
+        return False
+
+    lo, hi = min(vals), max(vals)
+    if hi - lo < 4:                      # 温差太小会画成直线，人为撑开到 4 度
+        mid = (hi + lo) / 2.0
+        lo, hi = mid - 2.0, mid + 2.0
+    span = max(0.5, hi - lo)
+
+    top = y0 + 20
+    bot = y0 + h - 16
+    n = len(vals)
+
+    def px(k):
+        return x0 + int(round(w * k / (n - 1)))
+
+    def py(v):
+        return int(round(bot - (v - lo) / span * (bot - top)))
+
+    for k in range(n - 1):
+        d.line([px(k), py(vals[k]), px(k + 1), py(vals[k + 1])], fill=BLACK, width=3)
+    for k in range(n):
+        x, y = px(k), py(vals[k])
+        d.ellipse([x - 3, y - 3, x + 3, y + 3], fill=BLACK)
+
+    f_t = font(FONT_REG, 16)
+    # 温度只标四处：首、末、最高、最低，避免挤成一团
+    for k in sorted({0, n - 1, vals.index(max(vals)), vals.index(min(vals))}):
+        t = "%d°" % round(vals[k])
+        tw = d.textlength(t, font=f_t)
+        tx = max(x0, min(px(k) - tw / 2, x0 + w - tw))
+        d.text((tx, py(vals[k]) - 20), t, font=f_t, fill=BLACK)
+
+    f_h = font(FONT_REG, 15)
+    for k in range(0, n, 2):             # 每 2 小时标一个刻度
+        t = str(hrs[k])
+        tw = d.textlength(t, font=f_h)
+        d.text((px(k) - tw / 2, bot + 3), t, font=f_h, fill=GRAY)
+    return True
+
+
 def compass(deg):
     names = ["北", "东北", "东", "东南", "南", "西南", "西", "西北"]
     return names[int((deg + 22.5) % 360 // 45)]
@@ -372,11 +433,18 @@ def render(data, out, at=None):
     if st:
         d.text((424, 380), "今日 " + st, font=font(FONT_REG, 21), fill=GRAY)
 
-    d.line([(30, 412), (W - 30, 412)], fill=LGRAY, width=2)
+    d.line([(30, 406), (W - 30, 406)], fill=LGRAY, width=2)
 
-    # 底部：未来三天（按 at 所在日期往后推，跨天也不会错位）
-    cols = [(110, 1), (400, 2), (690, 3)]
-    for cx, off in cols:
+    # 底部上：未来 12 小时气温曲线
+    if not draw_curve(d, data, at, 36, 414, W - 72, 98):
+        d.text((36, 460), "（逐小时气温暂不可用）", font=font(FONT_REG, 19), fill=LGRAY)
+
+    d.line([(30, 520), (W - 30, 520)], fill=LGRAY, width=2)
+
+    # 底部下：未来三天，紧凑横排（小图标 + 一行文字），把竖向空间让给曲线
+    f_one = font(FONT_REG, 19)
+    for col, off in enumerate((1, 2, 3)):
+        x0c = 40 + col * 247
         dd = at.date() + datetime.timedelta(days=off)
         i = daily_index(daily, dd)
         if i is None:
@@ -388,13 +456,12 @@ def render(data, out, at=None):
             lo = daily["temperature_2m_min"][i]
         except Exception:
             continue
-        label = ("明天" if off == 1 else WEEK[dd.weekday()])
-        d.text((cx, 424), label, font=font(FONT_BOLD, 25), fill=BLACK, anchor="mm")
-        draw_icon(d, dk, cx, 476, 30)
-        d.text((cx, 520), "%d°/%d°" % (round(hi), round(lo)), font=font(FONT_REG, 23), fill=BLACK, anchor="mm")
-        d.text((cx, 552), dh, font=font(FONT_REG, 19), fill=GRAY, anchor="mm")
+        label = ("明天" if off == 1 else "周" + WEEK[dd.weekday()][2])
+        draw_icon(d, dk, x0c + 24, 548, 20)
+        d.text((x0c + 54, 548), "%s %d°/%d° %s" % (label, round(hi), round(lo), dh),
+               font=f_one, fill=BLACK, anchor="lm")
 
-    d.text((32, 582), "更新 " + at.strftime("%m-%d %H:%M"),
+    d.text((32, 590), "更新 " + at.strftime("%m-%d %H:%M"),
            font=font(FONT_REG, 15), fill=LGRAY, anchor="ls")
 
     img.save(out, "PNG")

@@ -2,9 +2,10 @@ name: Render Kindle Dashboard
 
 on:
   schedule:
-    # 每 3 小时跑一次（UTC）。生成未来 26 小时、按整点命名的图，
+    # 每小时跑一次（UTC 的第 17 分）。生成未来 26 小时、按整点命名的图，
     # Kindle 按本地时间挑对应那张下载，因此时钟始终精确到小时。
-    - cron: "17 */3 * * *"
+    # GitHub 公共仓库 Actions 完全免费、无分钟数限制，所以可以放心每小时跑。
+    - cron: "17 * * * *"
   workflow_dispatch:   # 允许手动点一次立刻生成
   push:
     branches: [main]
