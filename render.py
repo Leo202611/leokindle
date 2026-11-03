@@ -29,10 +29,16 @@ TZ = "Asia%2FShanghai"
 # 这组值来自 dash_diag.sh 的实测结果（Kindle 8 / 600x800）。
 # 若换机型，改这里 + 同步改 dashd.sh 的 BATT_POS 即可。
 # ---------------------------------------------------------------------------
-EIPS_X0 = 0        # 字符格左上角的像素 x
-EIPS_Y0 = 0        # 字符格左上角的像素 y
-EIPS_CELL_W = 12   # 单个字符格的像素宽（由 dash_probe3 实测校正）
-EIPS_CELL_H = 24   # 单个字符格的像素高
+# 以下 4 个值由 dash_probe3 v3 实测标定（Kindle 8 / 2016 / 600x800），
+# 与 dashd.sh 顶部常量保持一致：
+#   col0 字形左缘像素 x = 40；  row0 字形顶缘像素 y = 10
+#   列宽 cellW = 13.65px（20个'8'@row0 最右暗列 x=313 => (313-40)/19≈13.65）
+#   行高 cellH = 38.5px（row20 '8' 顶 y≈774/776 => (776-10)/20≈38.5）
+# eips 文本命令语法：eips [row] [col] "text"（row 在前，col 在后）
+EIPS_X0 = 40       # eips col0 字形左缘的像素 x
+EIPS_Y0 = 10       # eips row0 字形顶缘的像素 y
+EIPS_CELL_W = 13.65
+EIPS_CELL_H = 38.5
 
 # 底部状态栏：竖屏与横屏共用同一套几何，
 # 这样设备端叠加电量数字时 col/row 在两种模式下完全一致。
@@ -808,15 +814,35 @@ if __name__ == "__main__":
                 lf = os.path.join(args.outdir, at.strftime("%Y%m%d_%H") + "_land.png")
                 render_landscape(data, lf, at)
                 names.append(os.path.basename(lf))
-        # 电量槽元数据：云端算出槽的像素位置，设备端据此换算 eips 的 col/row
-        if args.landscape:
-            sl, sr = battery_slot_rect(W - 30, BATT_BASE_Y)
-            with open(os.path.join(args.outdir, "batt_pos.txt"), "w", encoding="utf-8") as f:
-                f.write("# 电量叠加位置。slot_l/slot_r 是竖屏 PNG 里的像素范围，\n")
-                f.write("# 设备端用 eips 的字符格宽换算成 col/row。\n")
-                f.write("portrait_slot_l %d\n" % sl)
-                f.write("portrait_slot_r %d\n" % sr)
-                f.write("portrait_base_y %d\n" % BATT_BASE_Y)
+        # 电量槽元数据：云端用实测标定几何直接算出 eips 的 col/row，
+        # 设备端 dashd.sh 直接读取，不再二次换算，避免公式不一致。
+        probe = ImageDraw.Draw(Image.new("L", (8, 8)))
+        f_b = font(FONT_REG, BATT_FONT_SIZE)
+        pw = probe.textlength(BATT_PCT, font=f_b)
+        # ---- 竖屏：槽在底部状态栏右侧（portrait RIGHT = W - 30 = 570）----
+        sl_p, sr_p, _, _, _, _ = battery_slot_rect(W - 30, BATT_BASE_Y)
+        slot_top = BATT_BASE_Y - BATT_FONT_SIZE
+        slot_bot = BATT_BASE_Y + 4
+        slot_cy_p = (slot_top + slot_bot) // 2          # 槽垂直中心像素 y
+        batt_col_p = eips_col(sr_p - 2 - EIPS_CELL_W)   # 最右数字左缘列（留 2px 内边距）
+        batt_row_p = eips_row(slot_cy_p)                # 槽垂直中心行
+        # ---- 横屏：槽在 800x600 画布底部，旋转 90° 后落到最终 600x800 的左侧竖条 ----
+        # 画布坐标 (x,y) -> 最终像素 (HL-1-y, x)，HL=600 为画布高。
+        slot_r_l = (WL - 26) - pw                       # 横屏 RIGHT = WL-26 = 774
+        slot_l_l = slot_r_l - BATT_SLOT_W
+        fin_x_r = (HL - 1) - (560 + 5)                  # 槽底 canvas y=565 -> 最终 x'
+        fin_y_c = (slot_l_l + slot_r_l) // 2            # 槽中心 canvas x -> 最终 y'
+        batt_col_l = eips_col(fin_x_r - 2 - EIPS_CELL_W)
+        batt_row_l = eips_row(fin_y_c)
+        with open(os.path.join(args.outdir, "batt_pos.txt"), "w", encoding="utf-8") as f:
+            f.write("# 电量叠加位置（竖屏/横屏）。值由 dash_probe3 实测几何直接换算 eips col/row。\n")
+            f.write("# 设备端 dashd.sh 直接读取，不再二次换算。\n")
+            f.write("portrait_batt_col %d\n" % batt_col_p)
+            f.write("portrait_batt_row %d\n" % batt_row_p)
+            f.write("landscape_batt_col %d\n" % batt_col_l)
+            f.write("landscape_batt_row %d\n" % batt_row_l)
+            f.write("# 调试用像素：竖屏槽 x=%d..%d 中心y=%d；横屏最终槽 x≈%d 中心y=%d\n"
+                    % (sl_p, sr_p, slot_cy_p, fin_x_r, fin_y_c))
         # 索引文件：Kindle 抓不到目标图时可据此挑最近的一张
         with open(os.path.join(args.outdir, "index.txt"), "w", encoding="utf-8") as f:
             f.write("\n".join(names) + "\n")
