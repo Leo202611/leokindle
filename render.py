@@ -343,20 +343,29 @@ def font(path, size):
 
 def big_day(d, x, y, ds, fday_path, fday_size, day_path, day_size,
             week_text, week_path, week_size, right_x, sep="日",
-            sep_gap=8, week_after_sep=False, min_day_size=96, min_small=26):
+            sep_gap=8, week_after_sep=False, min_day_size=96, min_small=26,
+            shrink_num=True, min_gap=8):
     """画大号日号 + 「日」 + 星期，三者视觉垂直居中于同一行。
 
     大数字高度与小字差很多，若都按同一基线画，小字会明显偏上；
     这里按各自字形 bbox 求中心线来对齐。
 
-    **两位数日号（10 号起）会顶到右边的星期**：竖屏右栏净宽只有 238px，
-    "15" 在 142px 字号下就占 160px，右边再也放不下 36px 的"星期日"，
-    两者会直接叠在一起（实测"5"压住"星"字）。所以这里按可用宽度自动降级：
-    先缩「日」和星期，再缩日号，保证三者始终排得下、不重叠。
+    **字号必须固定，不能随位数跳变。**
+    早期版本用 142px 起、装不下就一路缩到 96px，结果 1~9 号是 142px、
+    10 号以后变成 96px —— 同一块屏上日期大小随日期跳变，观感很差，
+    而且 142px 的单个数字还会顶到上一行的"2026年11月"。
+    现在日号字号由调用方固定（竖屏 104px、横屏 88px），
+    横向放不下时**只缩「日」和星期这两个小字**，日号绝不动。
+    这样单双数字的日号高度一致，观感统一。
+
+    竖屏右栏净宽只有 238px，104px 字号下双位数("31")宽 114px，
+    加「日」26px 与「星期日」84px 刚好排得下，实测互不重叠。
 
     week_after_sep=True 时星期紧跟在「日」后面（横屏用：右栏宽 382）。
     """
-    ns, ds_size, ws = fday_size, day_size, week_size
+    ns = fday_size
+    ds_size, ws = day_size, week_size
+    gap = sep_gap
     while True:
         nf = font(fday_path, ns)
         sf = font(day_path, ds_size)
@@ -365,18 +374,21 @@ def big_day(d, x, y, ds, fday_path, fday_size, day_path, day_size,
         sep_w = d.textlength(sep, font=sf)
         week_w = d.textlength(week_text, font=wf)
         if week_after_sep:
-            need = num_w + sep_gap + sep_w + sep_gap + 4 + week_w
+            need = num_w + gap + sep_w + gap + 4 + week_w
         else:
-            need = num_w + sep_gap + sep_w + sep_gap + week_w
+            need = num_w + gap + sep_w + gap + week_w
         avail = right_x - x
         if need <= avail:
             break
-        if ws > min_small:
-            ws -= 2
+        # 优先缩间隔，再缩「日」，再缩星期；日号只在明确允许时才缩
+        if gap > min_gap:
+            gap -= 1
         elif ds_size > min_small:
-            ds_size -= 2
-        elif ns > min_day_size:
-            ns -= 2
+            ds_size -= 1
+        elif ws > min_small:
+            ws -= 1
+        elif shrink_num and ns > min_day_size:
+            ns -= 1
         else:
             break
     fday = font(fday_path, ns)
@@ -388,12 +400,12 @@ def big_day(d, x, y, ds, fday_path, fday_size, day_path, day_size,
     dw = d.textlength(ds, font=fday)
     d.text((x, y), ds, font=fday, fill=BLACK, anchor="la")
     bs = d.textbbox((0, 0), sep, font=day_font, anchor="la")
-    d.text((x + dw + sep_gap, center - (bs[1] + bs[3]) / 2.0), sep,
+    d.text((x + dw + gap, center - (bs[1] + bs[3]) / 2.0), sep,
            font=day_font, fill=GRAY, anchor="la")
     bw = d.textbbox((0, 0), week_text, font=week_font, anchor="la")
     if week_after_sep:
         sw = d.textlength(sep, font=day_font)
-        d.text((x + dw + sep_gap + sw + sep_gap + 4,
+        d.text((x + dw + gap + sw + gap + 4,
                 center - (bw[1] + bw[3]) / 2.0), week_text,
                font=week_font, fill=BLACK, anchor="la")
     else:
@@ -649,20 +661,28 @@ def render(data, out, at=None):
         tw = d.textlength("今日 " + st, font=f_tm)
         d.text((RIGHT - tw, 112 + dy), "今日 " + st, font=f_tm, fill=GRAY)
     ds = str(at.day)
-    # 星期与日号同一行、右对齐，把大号数字右侧的空白吃掉；
-    # 两位数日号（10 号起）会自动降级字号，保证不与星期重叠
-    big_day(d, 332, 142, ds, FONT_BOLD, 142, FONT_REG, 34,
-            WEEK[at.weekday()], FONT_BOLD, 36, RIGHT)
+    # 竖屏右栏净宽只有 238px，容不下 142px 的大字（用户实测：单个数字会顶到
+    # 上面的"2026年11月"，两位数又会被迫降级到 96px，尺寸随日期跳变）。
+    # 现在日号固定 104px —— 单双数字完全一致，绝不跳变；
+    # 「日」和「星期」这两个小字允许自动收缩来腾空间，日号本身不动。
+    # 星期用 week_after_sep（紧跟「日」）而不是右对齐：
+    #   双数字时「日」右缘在 475，右对齐的星期左缘在 492，只剩 17px 挤在一起；
+    #   改成紧跟后最宽用到 552，右界 570 还余 18px，两种位数都是舒展的。
+    big_day(d, 332, 148, ds, FONT_BOLD, 104, FONT_REG, 26,
+            WEEK[at.weekday()], FONT_BOLD, 28, RIGHT, sep_gap=6,
+            week_after_sep=True, shrink_num=False)
     # 农历行用 22px：给右下角的生肖剪影腾出横向空间（农历到 464，剪影从 468 起）
-    d.text((332, 290), lunar_str(at.date()), font=font(FONT_REG, 22), fill=BLACK)
+    # 日号从 142px 缩到 104px 后，右栏上半部空出约 40px，
+    # 农历/干支/生肖三行整体上移 24px，让右栏节奏与左栏对齐、底部留白均衡。
+    d.text((332, 266), lunar_str(at.date()), font=font(FONT_REG, 22), fill=BLACK)
 
     # 生肖日：剪影 + 日干支 + 生肖名
     zod, day_gz = zodiac_of_day(at.date())
     if draw_zodiac:
         # 剪影外接框 100x104，居中在右栏右下角（x 468~568），左侧留给文字。
-        draw_zodiac(img, d, zod, 518, 344, 100)
-    d.text((332, 320), "%s日" % day_gz, font=font(FONT_BOLD, 22), fill=BLACK)
-    d.text((332, 350), "生肖 %s" % zod, font=font(FONT_REG, 19), fill=GRAY)
+        draw_zodiac(img, d, zod, 518, 330, 100)
+    d.text((332, 296), "%s日" % day_gz, font=font(FONT_BOLD, 22), fill=BLACK)
+    d.text((332, 326), "生肖 %s" % zod, font=font(FONT_REG, 19), fill=GRAY)
 
     d.line([(M, 412), (RIGHT, 412)], fill=LGRAY, width=2)
 
@@ -875,10 +895,12 @@ def render_landscape(data, out, at=None):
         tw = d.textlength("今日 " + st, font=f_tm)
         d.text((RIGHT - tw, 112 + dy), "今日 " + st, font=f_tm, fill=GRAY)
     ds = str(at.day)
-    # 横屏右栏宽 382，星期紧跟「日」而不是右对齐——右对齐会压到剪影
+    # 横屏右栏宽 382，星期紧跟「日」而不是右对齐——右对齐会压到剪影。
+    # 日号固定 88px（与竖屏同一套"字号固定、只缩小字"的策略），
+    # 单双数字高度一致，不会随日期跳变。
     big_day(d, 392, 134, ds, FONT_BOLD, 88, FONT_REG, 26,
             WEEK[at.weekday()], FONT_BOLD, 28, RIGHT, sep_gap=6,
-            week_after_sep=True)
+            week_after_sep=True, shrink_num=False)
     # 农历行
     d.text((392, 236), lunar_str(at.date()), font=font(FONT_REG, 21), fill=BLACK)
 
