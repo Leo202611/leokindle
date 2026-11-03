@@ -40,15 +40,17 @@ jobs:
       - name: 安装依赖
         run: pip install -q -r requirements.txt
 
-      - name: 批量渲染逐小时图
+      - name: 批量渲染逐小时图（竖屏 + 横屏两套）
         run: |
           mkdir -p out
-          python3 render.py --hours 26 --outdir out
+          python3 render.py --hours 26 --outdir out --landscape
           echo "---- 产物 ----"
           ls -l out | head -8
           cat out/index.txt | head -3
           echo "..."
           cat out/index.txt | tail -2
+          echo "---- 电量槽元数据 ----"
+          cat out/batt_pos.txt
 
       - name: 配置 Pages（未开通时会自动开通）
         id: pages_conf
@@ -72,8 +74,8 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout --orphan dash_tmp
           git rm -rf --cached . >/dev/null 2>&1 || true
-          cp out/*.png out/index.txt .
-          git add -f *.png index.txt
+          cp out/*.png out/index.txt out/batt_pos.txt .
+          git add -f *.png index.txt batt_pos.txt
           git commit -m "dash $(date -u +'%Y-%m-%dT%H:%MZ')"
           git push -f origin dash_tmp:dash
 

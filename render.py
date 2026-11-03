@@ -17,7 +17,36 @@ except Exception:
     TZLOCAL = datetime.timezone(datetime.timedelta(hours=8))
 
 W, H = 600, 800   # Kindle 8 (2016) 屏幕为 600x800 竖屏，必须按此尺寸渲染，否则右侧/底部会被裁
+WL, HL = 800, 600  # 横屏版式尺寸（同一块面板旋转 90° 使用）
 TZ = "Asia%2FShanghai"
+
+# ---------------------------------------------------------------------------
+# eips 字符网格几何
+#
+# 设备端用 eips 叠加电量数字时，eips 用的是「字符格」坐标而非像素坐标，
+# 所以云端必须知道每个字符格的位置和宽度，才能把预留的数字槽换算成 col/row。
+#
+# 这组值来自 dash_diag.sh 的实测结果（Kindle 8 / 600x800）。
+# 若换机型，改这里 + 同步改 dashd.sh 的 BATT_POS 即可。
+# ---------------------------------------------------------------------------
+EIPS_X0 = 0        # 字符格左上角的像素 x
+EIPS_Y0 = 0        # 字符格左上角的像素 y
+EIPS_CELL_W = 12   # 单个字符格的像素宽（由 dash_probe3 实测校正）
+EIPS_CELL_H = 24   # 单个字符格的像素高
+
+# 底部状态栏：竖屏与横屏共用同一套几何，
+# 这样设备端叠加电量数字时 col/row 在两种模式下完全一致。
+BATT_BASE_Y = 762              # 底部状态栏基线（更新 / 电量 共用）
+
+
+def eips_col(x):
+    """像素 x -> eips 列号"""
+    return int(round((x - EIPS_X0) / float(EIPS_CELL_W)))
+
+
+def eips_row(y):
+    """像素 y -> eips 行号"""
+    return int(round((y - EIPS_Y0) / float(EIPS_CELL_H)))
 
 # ---------------------------------------------------------------------------
 # 位置：不在代码里写死任何城市。
@@ -197,6 +226,33 @@ def lunar_str(d):
 
 
 WEEK = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+
+# ---------- 干支纪年与生肖 ----------
+# 生肖年以农历正月初一（春节）为界，这是民间通行的换年标准。
+GAN = "甲乙丙丁戊己庚辛壬癸"
+ZHI = "子丑寅卯辰巳午未申酉戌亥"
+SHENG = "鼠牛虎兔龙蛇马羊猴鸡狗猪"
+
+
+def _lunar_new_year(y):
+    """农历 y 年正月初一对应的公历 date。优先用新版 API。"""
+    try:
+        return LunarDate(y, 1, 1).to_solar_date()
+    except AttributeError:
+        return LunarDate(y, 1, 1).toSolarDate()
+
+
+def ganzhi_of(d):
+    """返回 (干支, 生肖, 干支年)。例：2026 年 -> ('丙午', '马', 2026)。"""
+    y = d.year
+    try:
+        spring = _lunar_new_year(y)     # 该农历年正月初一对应的公历日
+        if d < spring:
+            y -= 1                                     # 春节前仍属上一干支年
+    except Exception:
+        pass
+    idx = (y - 4) % 60
+    return GAN[idx % 10] + ZHI[idx % 12], SHENG[idx % 12], y
 
 
 def font(path, size):
@@ -397,12 +453,17 @@ def render(data, out, at=None):
     M = 30                 # 左右统一边距
     RIGHT = W - M          # 内容右边界 570
 
-    # 顶部：城市 + 问候语 | 时间
+    # 顶部：城市 + 问候语 | 干支纪年 + 生肖
+    # 时钟已移除：本仪表盘每小时才刷新一次，显示分钟级时钟没有意义；
+    # 改为几乎不变的干支纪年与生肖，次年生肖随春节自动更替。
     d.text((M, 22), city_label(), font=font(FONT_BOLD, 30), fill=BLACK)
     d.text((M + 2, 60), greeting(at.hour) + "，祝你今天顺利", font=font(FONT_REG, 20), fill=GRAY)
-    t = at.strftime("%H:%M")
-    fbig = font(FONT_BOLD, 40)
-    d.text((RIGHT - d.textlength(t, font=fbig), 20), t, font=fbig, fill=BLACK)
+    gz, sheng, gz_year = ganzhi_of(at.date())
+    f_gz = font(FONT_BOLD, 40)
+    gw = d.textlength(gz, font=f_gz)
+    d.text((RIGHT - gw, 14), gz, font=f_gz, fill=BLACK)
+    d.text((RIGHT - d.textlength(sheng + "年", font=font(FONT_REG, 22)), 62),
+           sheng + "年", font=font(FONT_REG, 22), fill=GRAY)
     d.line([(M, 98), (RIGHT, 98)], fill=LGRAY, width=2)
 
     # 左：当前天气
@@ -470,20 +531,240 @@ def render(data, out, at=None):
         draw_icon(d, dk, start + 22, 660, 22)
         d.text((start + 54, 660), txt, font=f_one, fill=BLACK, anchor="lm")
 
-    # 底部左：更新时间（电量由设备端叠加在其右侧，同为黑色以形成统一状态栏）
-    d.text((M + 2, 762), "更新 " + at.strftime("%m-%d %H:%M"),
-           font=font(FONT_REG, 15), fill=BLACK, anchor="ls")
-
-    # 底部右：返回按钮（设备端触摸该区域即退出仪表盘）
-    bx0, by0, bx1, by1 = 442, 736, 570, 786
-    d.rectangle([bx0, by0, bx1, by1], outline=BLACK, width=2)
-    fbtn = font(FONT_BOLD, 22)
-    tbtn = "返回"
-    tw = d.textlength(tbtn, font=fbtn)
-    d.text(((bx0 + bx1) / 2, (by0 + by1) / 2), tbtn, font=fbtn, fill=BLACK, anchor="mm")
+    # 底部状态栏：左=更新时间，右=电量徽标（数字由设备端 eips 叠加）
+    draw_footer(d, M, RIGHT, at)
 
     img.save(out, "PNG")
     return out
+
+
+def draw_footer(d, left_x, right_x, at):
+    """画底部状态栏。竖屏与横屏共用，位置完全一致。
+
+    电量徽标的像素矩形会同时写进 <outdir>/batt_pos，
+    设备端据此换算 eips 的 col/row 叠加数字。
+    """
+    d.text((left_x + 2, BATT_BASE_Y), "更新 " + at.strftime("%m-%d %H:%M"),
+           font=font(FONT_REG, 15), fill=BLACK, anchor="ls")
+    slot_l, slot_r = draw_battery_slot(d, right_x, BATT_BASE_Y)
+    return slot_l, slot_r
+
+
+# ---- 电量槽几何（云端渲染与设备端叠加共用同一套数）----
+BATT_LABEL = "电量"
+BATT_PCT = "%"
+BATT_FONT_SIZE = 21
+BATT_SLOT_W = 48       # 数字槽宽度（够放 3 位 ASCII 数字）
+BATT_GAP = 6           # 「电量」与数字槽之间的留白
+BATT_SLOT_R = 6        # 数字槽右边缘到 '%' 的留白
+
+
+def battery_slot_rect(right_x, baseline_y):
+    """返回电量槽像素矩形 (slot_l, slot_r, lab_l, lab_r, top, bottom)。
+
+    排布自右向左：[%][留白][数字槽][留白][电量]
+    设备端把数字右对齐写进 [slot_l, slot_r]，不会压到 '%' 和「电量」。
+    """
+    probe = ImageDraw.Draw(Image.new("L", (8, 8)))
+    f_b = font(FONT_REG, BATT_FONT_SIZE)
+    pw = probe.textlength(BATT_PCT, font=f_b)
+    lw = probe.textlength(BATT_LABEL, font=f_b)
+    slot_r = right_x - pw - BATT_SLOT_R
+    slot_l = slot_r - BATT_SLOT_W
+    lab_r = slot_l - BATT_GAP
+    lab_l = lab_r - lw
+    return slot_l, slot_r, lab_l, lab_r, baseline_y - BATT_FONT_SIZE, baseline_y + 4
+
+
+def draw_battery_slot(d, right_x, baseline_y):
+    """画「电量 <数字槽> %」。数字槽留白，由设备端用 eips 叠加 ASCII 数字。
+
+    槽内画一条极浅的底线，方便肉眼校验设备端数字有没有落在槽内。
+    """
+    f_b = font(FONT_REG, BATT_FONT_SIZE)
+    slot_l, slot_r, lab_l, lab_r, top, bot = battery_slot_rect(right_x, baseline_y)
+    d.text((lab_l, baseline_y), BATT_LABEL, font=f_b, fill=BLACK, anchor="ls")
+    d.text((right_x, baseline_y), BATT_PCT, font=f_b, fill=BLACK, anchor="rs")
+    d.rectangle([slot_l, top, slot_r, bot], fill=WHITE)
+    d.line([(slot_l, bot), (slot_r, bot)], fill=LGRAY, width=1)
+    return slot_l, slot_r
+
+
+
+# ---------------------------------------------------------------------------
+# 横屏版式
+#
+# Kindle 8 的屏幕物理上就是 600x800 竖屏，固件无自动旋转、也无陀螺仪，
+# 所以"横屏"不可能自动感知，只能：
+#   1) 云端渲染 800x600 的横版画面，逆时针旋转 90° 后烧成 600x800 的 PNG；
+#   2) 用户把 Kindle 横过来拿时，看到的正好是正的。
+#
+# 横屏的优势是横向空间大：竖屏只放 2 天预报，横屏可以放 5 天。
+# ---------------------------------------------------------------------------
+
+
+def draw_multi_day(d, daily, at, x0, y0, w, h, days=5):
+    """横屏用的多日温度带：每天一列，柱状表示最高/最低温，柱顶标最高温。"""
+    d.text((x0, y0 - 8), "未来 %d 天" % days, font=font(FONT_BOLD, 20), fill=BLACK)
+    # 日期标签行独占一行；柱体从它下面开始，柱顶再留 22px 给最高温标注，
+    # 否则标签会和最高温数字压在一起。
+    label_y = y0 + 26
+    top = y0 + 44
+    bot = y0 + h - 30
+    colw = w / float(days)
+
+    # 收集数据
+    items = []
+    for off in range(days):
+        dd = at.date() + datetime.timedelta(days=off)
+        i = daily_index(daily, dd)
+        if i is None:
+            continue
+        try:
+            hi = float(daily["temperature_2m_max"][i])
+            lo = float(daily["temperature_2m_min"][i])
+            code = daily["weather_code"][i]
+        except Exception:
+            continue
+        items.append((dd, hi, lo, code))
+    if not items:
+        return
+
+    hi_all = max(t[1] for t in items)
+    lo_all = min(t[2] for t in items)
+    span = max(1.0, hi_all - lo_all)
+    # 柱区上方留 22px 给最高温标注
+    bar_top = top + 22
+    bar_bot = bot
+
+    for k, (dd, hi, lo, code) in enumerate(items):
+        cx = x0 + int(colw * (k + 0.5))
+        desc, kind = WMO.get(code, ("未知", "cloud"))
+        # 日期标签放最上方（在最高温标注之上），避免与柱体/最低温重叠
+        if k == 0:
+            label = "今天"
+        elif k == 1:
+            label = "明天"
+        else:
+            label = WEEK[dd.weekday()]
+        d.text((cx, label_y), label, font=font(FONT_REG, 17), fill=GRAY, anchor="mm")
+        # 柱：最高到最低
+        y_hi = int(bar_bot - (hi - lo_all) / span * (bar_bot - bar_top))
+        d.rectangle([cx - 20, y_hi, cx + 20, bar_bot], fill=WHITE, outline=BLACK, width=2)
+        # 上下端小横杠
+        d.line([(cx - 24, y_hi), (cx + 24, y_hi)], fill=BLACK, width=3)
+        d.line([(cx - 24, bar_bot), (cx + 24, bar_bot)], fill=BLACK, width=3)
+        # 最高温标注：贴在柱顶横杠上方
+        d.text((cx, y_hi - 6), "%d°" % round(hi), font=font(FONT_BOLD, 17),
+               fill=BLACK, anchor="ms")
+        # 最低温标注：贴在柱底横杠下方
+        d.text((cx, bar_bot + 5), "%d°" % round(lo), font=font(FONT_REG, 15),
+               fill=GRAY, anchor="ma")
+        # 天气图标：放在柱内中段
+        draw_icon(d, kind, cx, (y_hi + bar_bot) / 2, 13)
+
+
+def render_landscape(data, out, at=None):
+    """渲染横屏版：800x600 画面 -> 逆时针旋转 90° -> 600x800 PNG。
+
+    关于底部状态栏：eips 画的文字永远是"竖屏方向正"的，
+    在横屏视图里必然躺倒。所以横屏版的状态栏仍然画在竖屏坐标系
+    （旋转后的 600x800 画布下方），这样设备端叠加电量数字时
+    竖屏/横屏用的是同一组 col/row，一套坐标通吃。
+    """
+    _ensure_location()
+    at = at or datetime.datetime.now(TZLOCAL)
+
+    LW, LH = 800, 600
+    img = Image.new("L", (LW, LH), WHITE)
+    d = ImageDraw.Draw(img)
+
+    daily = data["daily"]
+    cur = pick_hourly(data, at) or data["current"]
+    code = cur.get("weather_code")
+    desc, kind = WMO.get(code, ("未知", "cloud"))
+    temp = cur.get("temperature_2m")
+    if temp is None:
+        temp = data["current"].get("temperature_2m", 0)
+
+    M = 26
+    RIGHT = LW - M
+
+    # 顶栏：城市 + 问候 | 干支 + 生肖
+    d.text((M, 12), city_label(), font=font(FONT_BOLD, 28), fill=BLACK)
+    d.text((M + 2, 46), greeting(at.hour) + "，祝你今天顺利", font=font(FONT_REG, 19), fill=GRAY)
+    gz, sheng, gz_year = ganzhi_of(at.date())
+    f_gz = font(FONT_BOLD, 36)
+    gw = d.textlength(gz, font=f_gz)
+    d.text((RIGHT - gw, 6), gz, font=f_gz, fill=BLACK)
+    d.text((RIGHT - d.textlength(sheng + "年", font=font(FONT_REG, 20)), 48),
+           sheng + "年", font=font(FONT_REG, 20), fill=GRAY)
+    d.line([(M, 78), (RIGHT, 78)], fill=LGRAY, width=2)
+
+    # 左栏：当前天气
+    d.text((M + 2, 90), "当前天气", font=font(FONT_REG, 18), fill=GRAY)
+    d.text((M + 2, 114), "%d°" % round(temp), font=font(FONT_BOLD, 84), fill=BLACK)
+    draw_icon(d, kind, 262, 154, 48)
+    d.text((M + 2, 210), desc, font=font(FONT_BOLD, 26), fill=BLACK)
+    rh = cur.get("relative_humidity_2m")
+    ws = cur.get("wind_speed_10m")
+    wd = cur.get("wind_direction_10m")
+    line = "湿度 %s%%" % (rh if rh is not None else "--")
+    if ws is not None:
+        line += "   风 %.0f km/h" % ws
+        if wd is not None:
+            line += " %s" % compass(wd)
+    d.text((M + 2, 248), line, font=font(FONT_REG, 19), fill=GRAY)
+    pp = cur.get("precipitation_probability")
+    if pp is not None:
+        d.text((M + 2, 278), "降水概率 %d%%" % int(round(pp)), font=font(FONT_REG, 19), fill=GRAY)
+
+    # 右栏：日历
+    d.text((392, 90), "日历", font=font(FONT_REG, 18), fill=GRAY)
+    d.text((392, 112), "%d年%d月" % (at.year, at.month), font=font(FONT_REG, 22), fill=GRAY)
+    fday = font(FONT_BOLD, 88)
+    ds = str(at.day)
+    d.text((392, 134), ds, font=fday, fill=BLACK)
+    dw = d.textlength(ds, font=fday)
+    d.text((392 + dw + 6, 134 + (88 - 26) // 2), "日", font=font(FONT_REG, 26), fill=GRAY)
+    d.text((392, 238), WEEK[at.weekday()], font=font(FONT_BOLD, 27), fill=BLACK)
+    d.text((392, 276), lunar_str(at.date()), font=font(FONT_REG, 21), fill=BLACK)
+    st = solar_term_of(at.date())
+    if st:
+        d.text((392, 306), "今日 " + st, font=font(FONT_REG, 18), fill=GRAY)
+
+    d.line([(M, 336), (RIGHT, 336)], fill=LGRAY, width=2)
+
+    # 下部：多日温度趋势（横屏优势：5 天）
+    draw_multi_day(d, daily, at, M, 344, RIGHT - M, 200, days=5)
+
+    # 底部状态栏：画在 800x600 画布的底部条带里，随画面一起旋转，
+    # 这样用户横持时它正好在正下方（而不是跟着跑到侧边去）。
+    d.line([(M, 552), (RIGHT, 552)], fill=LGRAY, width=2)
+    d.text((M + 2, 560), "更新 " + at.strftime("%m-%d %H:%M"),
+           font=font(FONT_REG, 16), fill=BLACK)
+    # 电量：中文与 % 由云端画，数字由设备端 eips 叠加（留空槽）
+    f_b = font(FONT_REG, 21)
+    probe = ImageDraw.Draw(Image.new("L", (8, 8)))
+    pw = probe.textlength(BATT_PCT, font=f_b)
+    lw = probe.textlength(BATT_LABEL, font=f_b)
+    slot_r = RIGHT - pw
+    slot_l = slot_r - BATT_SLOT_W
+    d.text((slot_l - BATT_GAP - lw, 560), BATT_LABEL, font=f_b, fill=BLACK)
+    d.text((RIGHT, 560), BATT_PCT, font=f_b, fill=BLACK)
+    d.rectangle([slot_l, 560 - 18, slot_r, 560 + 5], fill=WHITE)
+    d.line([(slot_l, 560 + 5), (slot_r, 560 + 5)], fill=LGRAY, width=1)
+
+    # 旋转成 600x800。
+    # 用 ROTATE_90（逆时针 90 度）：已用 ASCII 标记实测验证过——
+    # 用户把 Kindle 横过来拿（顶端朝右）时，看到的方向正好是正的，
+    # 文字不倒、不镜像。
+    img = img.transpose(Image.ROTATE_90)
+
+    img.save(out, "PNG")
+    # 注意：横屏版的状态栏随画面旋转了，所以设备端叠加数字的 col/row
+    # 与竖屏版不同，需要单独的坐标表（见 batt_pos 的 landscape 行）。
+    return out, (slot_l, slot_r)
 
 
 def city_label():
@@ -499,10 +780,12 @@ if __name__ == "__main__":
     import argparse
 
     ap = argparse.ArgumentParser(description="Kindle 日历天气仪表盘渲染器")
-    ap.add_argument("out", nargs="?", default="dash.png", help="单张输出文件名")
+    ap.add_argument("--out", default="dash.png", help="单张输出文件名")
     ap.add_argument("--hours", type=int, default=0,
                     help="批量模式：从当前整点起生成 N 张逐小时图")
     ap.add_argument("--outdir", default=".", help="批量模式输出目录")
+    ap.add_argument("--landscape", action="store_true",
+                    help="生成横屏版（800x600 画面旋转 90 度后输出 600x800）")
     args = ap.parse_args()
 
     LOCATION = resolve_location()
@@ -521,11 +804,30 @@ if __name__ == "__main__":
             fn = os.path.join(args.outdir, at.strftime("%Y%m%d_%H") + ".png")
             render(data, fn, at)
             names.append(os.path.basename(fn))
+            if args.landscape:
+                lf = os.path.join(args.outdir, at.strftime("%Y%m%d_%H") + "_land.png")
+                render_landscape(data, lf, at)
+                names.append(os.path.basename(lf))
+        # 电量槽元数据：云端算出槽的像素位置，设备端据此换算 eips 的 col/row
+        if args.landscape:
+            sl, sr = battery_slot_rect(W - 30, BATT_BASE_Y)
+            with open(os.path.join(args.outdir, "batt_pos.txt"), "w", encoding="utf-8") as f:
+                f.write("# 电量叠加位置。slot_l/slot_r 是竖屏 PNG 里的像素范围，\n")
+                f.write("# 设备端用 eips 的字符格宽换算成 col/row。\n")
+                f.write("portrait_slot_l %d\n" % sl)
+                f.write("portrait_slot_r %d\n" % sr)
+                f.write("portrait_base_y %d\n" % BATT_BASE_Y)
         # 索引文件：Kindle 抓不到目标图时可据此挑最近的一张
         with open(os.path.join(args.outdir, "index.txt"), "w", encoding="utf-8") as f:
             f.write("\n".join(names) + "\n")
         print("批量生成 %d 张 -> %s" % (len(names), os.path.abspath(args.outdir)))
         print("区间: %s ~ %s" % (names[0], names[-1]))
     else:
-        render(data, args.out)
+        if args.landscape:
+            out, slot = render_landscape(data, args.out)
+        else:
+            render(data, args.out)
+            slot = (None, None)
         print("OK ->", os.path.abspath(args.out))
+        if slot[0] is not None:
+            print("电量槽像素范围: x %d..%d" % slot)
