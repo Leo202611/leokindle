@@ -341,16 +341,48 @@ def font(path, size):
     return ImageFont.truetype(path, size)
 
 
-def big_day(d, x, y, ds, fday, day_font, week_text, week_font,
-            right_x, sep="日", sep_gap=8, week_after_sep=False):
+def big_day(d, x, y, ds, fday_path, fday_size, day_path, day_size,
+            week_text, week_path, week_size, right_x, sep="日",
+            sep_gap=8, week_after_sep=False, min_day_size=96, min_small=26):
     """画大号日号 + 「日」 + 星期，三者视觉垂直居中于同一行。
 
-    大数字高度（142px）与小字（34/36px）差很多，若都按同一基线画，
-    小字会明显偏上；这里按各自字形 bbox 求中心线来对齐。
+    大数字高度与小字差很多，若都按同一基线画，小字会明显偏上；
+    这里按各自字形 bbox 求中心线来对齐。
 
-    week_after_sep=True 时星期紧跟在「日」后面（横屏用：右栏宽，
-    星期若右对齐会和右下角的生肖剪影撞上）；否则右对齐到 right_x。
+    **两位数日号（10 号起）会顶到右边的星期**：竖屏右栏净宽只有 238px，
+    "15" 在 142px 字号下就占 160px，右边再也放不下 36px 的"星期日"，
+    两者会直接叠在一起（实测"5"压住"星"字）。所以这里按可用宽度自动降级：
+    先缩「日」和星期，再缩日号，保证三者始终排得下、不重叠。
+
+    week_after_sep=True 时星期紧跟在「日」后面（横屏用：右栏宽 382）。
     """
+    ns, ds_size, ws = fday_size, day_size, week_size
+    while True:
+        nf = font(fday_path, ns)
+        sf = font(day_path, ds_size)
+        wf = font(week_path, ws)
+        num_w = d.textlength(ds, font=nf)
+        sep_w = d.textlength(sep, font=sf)
+        week_w = d.textlength(week_text, font=wf)
+        if week_after_sep:
+            need = num_w + sep_gap + sep_w + sep_gap + 4 + week_w
+        else:
+            need = num_w + sep_gap + sep_w + sep_gap + week_w
+        avail = right_x - x
+        if need <= avail:
+            break
+        if ws > min_small:
+            ws -= 2
+        elif ds_size > min_small:
+            ds_size -= 2
+        elif ns > min_day_size:
+            ns -= 2
+        else:
+            break
+    fday = font(fday_path, ns)
+    day_font = font(day_path, ds_size)
+    week_font = font(week_path, ws)
+
     b = d.textbbox((0, 0), ds, font=fday, anchor="la")
     center = y + (b[1] + b[3]) / 2.0
     dw = d.textlength(ds, font=fday)
@@ -616,11 +648,11 @@ def render(data, out, at=None):
               - d.textbbox((0, 0), "今日", font=f_tm)[3])
         tw = d.textlength("今日 " + st, font=f_tm)
         d.text((RIGHT - tw, 112 + dy), "今日 " + st, font=f_tm, fill=GRAY)
-    fday = font(FONT_BOLD, 142)
     ds = str(at.day)
-    # 星期与日号同一行、右对齐，把大号数字右侧的空白吃掉
-    big_day(d, 332, 142, ds, fday, font(FONT_REG, 34),
-            WEEK[at.weekday()], font(FONT_BOLD, 36), RIGHT)
+    # 星期与日号同一行、右对齐，把大号数字右侧的空白吃掉；
+    # 两位数日号（10 号起）会自动降级字号，保证不与星期重叠
+    big_day(d, 332, 142, ds, FONT_BOLD, 142, FONT_REG, 34,
+            WEEK[at.weekday()], FONT_BOLD, 36, RIGHT)
     # 农历行用 22px：给右下角的生肖剪影腾出横向空间（农历到 464，剪影从 468 起）
     d.text((332, 290), lunar_str(at.date()), font=font(FONT_REG, 22), fill=BLACK)
 
@@ -842,11 +874,10 @@ def render_landscape(data, out, at=None):
               - d.textbbox((0, 0), "今日", font=f_tm)[3])
         tw = d.textlength("今日 " + st, font=f_tm)
         d.text((RIGHT - tw, 112 + dy), "今日 " + st, font=f_tm, fill=GRAY)
-    fday = font(FONT_BOLD, 88)
     ds = str(at.day)
     # 横屏右栏宽 382，星期紧跟「日」而不是右对齐——右对齐会压到剪影
-    big_day(d, 392, 134, ds, fday, font(FONT_REG, 26),
-            WEEK[at.weekday()], font(FONT_BOLD, 28), RIGHT, sep_gap=6,
+    big_day(d, 392, 134, ds, FONT_BOLD, 88, FONT_REG, 26,
+            WEEK[at.weekday()], FONT_BOLD, 28, RIGHT, sep_gap=6,
             week_after_sep=True)
     # 农历行
     d.text((392, 236), lunar_str(at.date()), font=font(FONT_REG, 21), fill=BLACK)
