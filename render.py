@@ -5,7 +5,7 @@ Kindle 8 (800x600) 日历 + 天气仪表盘渲染器
 数据源：Open-Meteo（免密钥）
 输出：8-bit 灰度 PNG，供 Kindle 用 eips -f -g 全屏显示
 """
-import json, urllib.request, urllib.parse, datetime, sys, os
+import json, urllib.request, urllib.parse, datetime, sys, os, math
 from PIL import Image, ImageDraw, ImageFont
 from lunardate import LunarDate
 
@@ -208,12 +208,55 @@ STM = [0, 21208, 42467, 63836, 85337, 107014, 128867, 150921, 173149, 195551,
 SOLAR = ["小寒", "大寒", "立春", "雨水", "惊蛰", "春分", "清明", "谷雨", "立夏", "小满",
          "芒种", "夏至", "小暑", "大暑", "立秋", "处暑", "白露", "秋分", "寒露", "霜降",
          "立冬", "小雪", "大雪", "冬至"]
+# 各节气的太阳视黄经（小寒 285°，每过一个节气 +15°）
+_STM_LON = [(285.0 + 15.0 * i) % 360.0 for i in range(24)]
+
+
+def _julian(dt_utc):
+    """UTC datetime -> 儒略日（含小数天）。"""
+    y, m = dt_utc.year, dt_utc.month
+    if m <= 2:
+        y -= 1
+        m += 12
+    a = y // 100
+    b = 2 - a + a // 4
+    frac = (dt_utc.hour + (dt_utc.minute + dt_utc.second / 60.0) / 60.0) / 24.0
+    return (int(365.25 * (y + 4716)) + int(30.6001 * (m + 1))
+            + dt_utc.day + frac + b - 1524.5)
+
+
+def _sun_longitude(jd):
+    """太阳视黄经（度）。NOAA 低精度算法，误差 < 0.01°（≈15 分钟）。"""
+    T = (jd - 2451545.0) / 36525.0
+    L0 = 280.46646 + T * (36000.76983 + T * 0.0003032)
+    M = math.radians(357.52911 + T * (35999.05029 - 0.0001537 * T))
+    C = (math.sin(M) * (1.914602 - T * (0.004817 + 0.000014 * T))
+         + math.sin(2 * M) * (0.019993 - 0.000101 * T)
+         + math.sin(3 * M) * 0.000289)
+    omega = math.radians(125.04 - 1934.136 * T)
+    return (L0 + C - 0.00569 - 0.00478 * math.sin(omega)) % 360.0
 
 
 def solar_term_date(y, n):
+    """第 n 个节气（0=小寒）在 y 年的日期（北京时间）。
+
+    直接按太阳视黄经跨过 15° 整数倍来定节气，再用牛顿迭代收敛到分钟级；
+    比"1900 基准 + 平均年长"的老公式准。老公式 2026 年立冬会算成 11-08，
+    实际（据万年历 App）是 11-07。
+    """
+    target = _STM_LON[n]
+    # 初值：老公式给的近似时刻（UTC）
     base = datetime.datetime(1900, 1, 6, 2, 5)
     ms = 31556925974.7 * (y - 1900) + STM[n] * 60000
-    return (base + datetime.timedelta(milliseconds=ms) + datetime.timedelta(hours=8)).date()
+    guess = base + datetime.timedelta(milliseconds=ms)
+    for _ in range(5):
+        lon = _sun_longitude(_julian(guess))
+        diff = (target - lon + 180.0) % 360.0 - 180.0      # 归一到 (-180, 180]
+        if abs(diff) < 1e-7:
+            break
+        # 太阳平均每天走约 0.9856°
+        guess += datetime.timedelta(days=diff / 0.9856473)
+    return (guess + datetime.timedelta(hours=8)).date()      # 换算北京时
 
 
 def solar_term_of(d):
@@ -221,22 +264,6 @@ def solar_term_of(d):
         if solar_term_date(d.year, n) == d:
             return SOLAR[n]
     return None
-
-
-def next_solar_term(d):
-    """返回 (节气名, 距今天的天数)：今天之后最近的一个节气。
-
-    没有它，右栏在"非节气日"就只能空着，是留白的主要来源之一。
-    """
-    best = None
-    for y in (d.year, d.year + 1):
-        for n in range(24):
-            sd = solar_term_date(y, n)
-            if sd > d and (best is None or sd < best[1]):
-                best = (SOLAR[n], sd)
-    if best is None:
-        return None
-    return best[0], (best[1] - d).days
 
 
 # ---------- 农历 ----------
@@ -312,41 +339,6 @@ def ganzhi_of(d):
 
 def font(path, size):
     return ImageFont.truetype(path, size)
-
-
-def draw_pair(d, x0, x1, y, left, lsize, right, rsize,
-              lbold=False, rbold=False, lfill=BLACK, rfill=GRAY,
-              gap=10, min_r=15, min_l=17):
-    """在同一行画左右两段文字，右段右对齐到 x1。
-
-    右栏净宽有限（竖屏 332~570 只有 238px），两段中文很容易撞在一起
-    （曾出现「丙午年·马」压住「2026年11月」、「58天」被右边界裁掉）。
-    这里先量宽度，冲突时自动缩小字号，保证：
-      1) 两段之间始终留出 gap 以上的空隙；
-      2) 任何一段都不会越出 x1。
-
-    y 是「视觉顶边」：两段都以自己的顶边对齐到 y（内部换算成基线），
-    所以不论两段字号是否相同，视觉上都在同一行。
-    """
-    lf = font(FONT_BOLD if lbold else FONT_REG, lsize)
-    ls, rs = lsize, rsize
-    while True:
-        rf = font(FONT_BOLD if rbold else FONT_REG, rs)
-        lw = d.textlength(left, font=lf)
-        rw = d.textlength(right, font=rf)
-        if x0 + lw + gap + rw <= x1:
-            break
-        if rs > min_r:
-            rs -= 1
-            continue
-        if ls > min_l:
-            ls -= 1
-            lf = font(FONT_BOLD if lbold else FONT_REG, ls)
-            continue
-        break
-    d.text((x0, y), left, font=lf, fill=lfill, anchor="la")
-    # 右段用 "ra"（右对齐 + 顶对齐），与左段的 "la" 顶对齐，视觉同一行
-    d.text((x1, y), right, font=rf, fill=rfill, anchor="ra")
 
 
 def big_day(d, x, y, ds, fday, day_font, week_text, week_font,
@@ -598,35 +590,38 @@ def render(data, out, at=None):
     d.line([(312, 112), (312, 396)], fill=LGRAY, width=2)
 
     # 右：日历
-    # 用户反馈"距离什么多少天、还有多少周不好看"，已把倒计时类信息全部撤掉，
-    # 改回简洁的日历信息；原来空出来的那块留白用来放**当天的生肖形象**。
+    # 用户反馈"距离什么多少天、还有多少周不好看"，倒计时类信息全部撤掉；
+    # 腾出来的那块留白用来放**当天的生肖剪影**。
     #
     # 生肖日 = 日支所主的生肖，用干支纪日精确计算（见 zodiac_of_day）。
-    # 例如 2026-11-04 是壬午日，午对应马，就是马日。
+    # 已与"万年历"App 的干支逐日核对过：11-04 壬午(马)、11-05 癸未(羊)、
+    # 11-06 甲申(猴)、11-07 乙酉(鸡)、11-08 丙戌(狗)，完全一致。
     d.text((332, 112), "%d年%d月" % (at.year, at.month),
-           font=font(FONT_REG, 26), fill=GRAY)
+           font=font(FONT_REG, 24), fill=GRAY)
+    st = solar_term_of(at.date())
+    # 节气一年只有 24 天，放第一行右端；年月缩到 24px 正好让出位置。
+    # 两段字号不同，按各自字形底边对齐基线。
+    if st:
+        f_tm = font(FONT_REG, 19)
+        dy = (d.textbbox((0, 0), "年月", font=font(FONT_REG, 24))[3]
+              - d.textbbox((0, 0), "今日", font=f_tm)[3])
+        tw = d.textlength("今日 " + st, font=f_tm)
+        d.text((RIGHT - tw, 112 + dy), "今日 " + st, font=f_tm, fill=GRAY)
     fday = font(FONT_BOLD, 142)
     ds = str(at.day)
     # 星期与日号同一行、右对齐，把大号数字右侧的空白吃掉
     big_day(d, 332, 142, ds, fday, font(FONT_REG, 34),
             WEEK[at.weekday()], font(FONT_BOLD, 36), RIGHT)
-    st = solar_term_of(at.date())
-    # 农历行：右边是节气（今天是节气就显示「今日 XX」），没有就留空
-    if st:
-        draw_pair(d, 332, RIGHT, 296, lunar_str(at.date()), 26,
-                  "今日 " + st, 22, lfill=BLACK, rfill=GRAY)
-    else:
-        d.text((332, 296), lunar_str(at.date()),
-               font=font(FONT_REG, 26), fill=BLACK)
+    # 农历行用 22px：给右下角的生肖剪影腾出横向空间（农历到 464，剪影从 468 起）
+    d.text((332, 290), lunar_str(at.date()), font=font(FONT_REG, 22), fill=BLACK)
 
-    # 生肖日：卡通形象 + 日干支，占掉原来倒计时那块的留白
+    # 生肖日：剪影 + 日干支 + 生肖名
     zod, day_gz = zodiac_of_day(at.date())
     if draw_zodiac:
-        # 居中放在右栏剩余空间里；马的吻部朝左会向左伸出，
-        # 所以整体再往右挪一点，避免压到中缝线。
-        draw_zodiac(d, zod, RIGHT - 48, 344, 90)
-    d.text((332, 338), "%s日" % day_gz, font=font(FONT_BOLD, 22), fill=BLACK)
-    d.text((332, 368), "生肖 %s" % zod, font=font(FONT_REG, 19), fill=GRAY)
+        # 剪影外接框 100x104，居中在右栏右下角（x 468~568），左侧留给文字。
+        draw_zodiac(img, d, zod, 518, 344, 100)
+    d.text((332, 320), "%s日" % day_gz, font=font(FONT_BOLD, 22), fill=BLACK)
+    d.text((332, 350), "生肖 %s" % zod, font=font(FONT_REG, 19), fill=GRAY)
 
     d.line([(M, 412), (RIGHT, 412)], fill=LGRAY, width=2)
 
@@ -826,29 +821,27 @@ def render_landscape(data, out, at=None):
     if pp is not None:
         d.text((M + 2, 278), "降水概率 %d%%" % int(round(pp)), font=font(FONT_REG, 19), fill=GRAY)
 
-    # 右栏：日历（与竖屏同样思路：每行左右两段，填满整栏）
+    # 右栏：日历（与竖屏同一套逻辑：干支生肖 + 当天生肖剪影）
     d.text((392, 90), "日历", font=font(FONT_REG, 18), fill=GRAY)
     st = solar_term_of(at.date())
-    nxt = next_solar_term(at.date())
     d.text((392, 112), "%d年%d月" % (at.year, at.month),
            font=font(FONT_REG, 22), fill=GRAY)
     fday = font(FONT_BOLD, 88)
     ds = str(at.day)
     big_day(d, 392, 134, ds, fday, font(FONT_REG, 26),
             WEEK[at.weekday()], font(FONT_BOLD, 28), RIGHT, sep_gap=6)
+    # 农历行；右邻一格放"今日 XX"节气，再往右是生肖剪影
+    d.text((392, 236), lunar_str(at.date()), font=font(FONT_REG, 21), fill=BLACK)
     if st:
-        draw_pair(d, 392, RIGHT, 238, lunar_str(at.date()), 21,
-                  "今日 " + st, 18, lfill=BLACK, rfill=GRAY)
-    else:
-        d.text((392, 238), lunar_str(at.date()),
-               font=font(FONT_REG, 21), fill=BLACK)
+        d.text((392 + 138, 238), "今日 " + st, font=font(FONT_REG, 18), fill=GRAY)
 
-    # 生肖日：卡通形象 + 日干支（与竖屏同一套逻辑）
+    # 生肖日：剪影 + 日干支 + 生肖名
     zod, day_gz = zodiac_of_day(at.date())
     if draw_zodiac:
-        draw_zodiac(d, zod, RIGHT - 56, 268, 118)
-    d.text((392, 262), "%s日" % day_gz, font=font(FONT_BOLD, 21), fill=BLACK)
-    d.text((392, 290), "生肖 %s" % zod, font=font(FONT_REG, 18), fill=GRAY)
+        # 横屏右栏宽 382，剪影外接框 130，占 x 629~759、y 201~331
+        draw_zodiac(img, d, zod, RIGHT - 80, 266, 130)
+    d.text((392, 268), "%s日" % day_gz, font=font(FONT_BOLD, 21), fill=BLACK)
+    d.text((392, 296), "生肖 %s" % zod, font=font(FONT_REG, 18), fill=GRAY)
 
     d.line([(M, 336), (RIGHT, 336)], fill=LGRAY, width=2)
 
