@@ -467,6 +467,14 @@ def render(data, out, at=None):
         d.text((x0c + 54, 548), "%s %d°/%d° %s" % (label, round(hi), round(lo), dh),
                font=f_one, fill=BLACK, anchor="lm")
 
+    # 右下角：返回按钮（设备端触摸该区域即退出仪表盘、恢复成普通阅读器）
+    bx0, by0, bx1, by1 = 700, 558, 792, 594
+    d.rectangle([bx0, by0, bx1, by1], outline=BLACK, width=2)
+    fbtn = font(FONT_BOLD, 22)
+    tbtn = "返回"
+    tw = d.textlength(tbtn, font=fbtn)
+    d.text(((bx0 + bx1) / 2, (by0 + by1) / 2), tbtn, font=fbtn, fill=BLACK, anchor="mm")
+
     d.text((32, 590), "更新 " + at.strftime("%m-%d %H:%M"),
            font=font(FONT_REG, 15), fill=LGRAY, anchor="ls")
 
