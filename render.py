@@ -218,6 +218,22 @@ def solar_term_of(d):
     return None
 
 
+def next_solar_term(d):
+    """返回 (节气名, 距今天的天数)：今天之后最近的一个节气。
+
+    没有它，右栏在"非节气日"就只能空着，是留白的主要来源之一。
+    """
+    best = None
+    for y in (d.year, d.year + 1):
+        for n in range(24):
+            sd = solar_term_date(y, n)
+            if sd > d and (best is None or sd < best[1]):
+                best = (SOLAR[n], sd)
+    if best is None:
+        return None
+    return best[0], (best[1] - d).days
+
+
 # ---------- 农历 ----------
 LUNA_MON = ["正", "二", "三", "四", "五", "六", "七", "八", "九", "十", "冬", "腊"]
 LUNA_DAY = ["初一", "初二", "初三", "初四", "初五", "初六", "初七", "初八", "初九", "初十",
@@ -263,6 +279,60 @@ def ganzhi_of(d):
 
 def font(path, size):
     return ImageFont.truetype(path, size)
+
+
+def draw_pair(d, x0, x1, y, left, lsize, right, rsize,
+              lbold=False, rbold=False, lfill=BLACK, rfill=GRAY,
+              gap=10, min_r=15, min_l=17):
+    """在同一行画左右两段文字，右段右对齐到 x1。
+
+    右栏净宽有限（竖屏 332~570 只有 238px），两段中文很容易撞在一起
+    （曾出现「丙午年·马」压住「2026年11月」、「58天」被右边界裁掉）。
+    这里先量宽度，冲突时自动缩小字号，保证：
+      1) 两段之间始终留出 gap 以上的空隙；
+      2) 任何一段都不会越出 x1。
+
+    y 是「视觉顶边」：两段都以自己的顶边对齐到 y（内部换算成基线），
+    所以不论两段字号是否相同，视觉上都在同一行。
+    """
+    lf = font(FONT_BOLD if lbold else FONT_REG, lsize)
+    ls, rs = lsize, rsize
+    while True:
+        rf = font(FONT_BOLD if rbold else FONT_REG, rs)
+        lw = d.textlength(left, font=lf)
+        rw = d.textlength(right, font=rf)
+        if x0 + lw + gap + rw <= x1:
+            break
+        if rs > min_r:
+            rs -= 1
+            continue
+        if ls > min_l:
+            ls -= 1
+            lf = font(FONT_BOLD if lbold else FONT_REG, ls)
+            continue
+        break
+    d.text((x0, y), left, font=lf, fill=lfill, anchor="la")
+    # 右段用 "ra"（右对齐 + 顶对齐），与左段的 "la" 顶对齐，视觉同一行
+    d.text((x1, y), right, font=rf, fill=rfill, anchor="ra")
+
+
+def big_day(d, x, y, ds, fday, day_font, week_text, week_font,
+            right_x, sep="日", sep_gap=8):
+    """画大号日号 + 「日」 + 右对齐的星期，三者视觉垂直居中于同一行。
+
+    大数字高度（142px）与小字（34/36px）差很多，若都按同一基线画，
+    小字会明显偏上；这里按各自字形 bbox 求中心线来对齐。
+    """
+    b = d.textbbox((0, 0), ds, font=fday, anchor="la")
+    center = y + (b[1] + b[3]) / 2.0
+    dw = d.textlength(ds, font=fday)
+    d.text((x, y), ds, font=fday, fill=BLACK, anchor="la")
+    bs = d.textbbox((0, 0), sep, font=day_font, anchor="la")
+    d.text((x + dw + sep_gap, center - (bs[1] + bs[3]) / 2.0), sep,
+           font=day_font, fill=GRAY, anchor="la")
+    bw = d.textbbox((0, 0), week_text, font=week_font, anchor="la")
+    d.text((right_x, center - (bw[1] + bw[3]) / 2.0), week_text,
+           font=week_font, fill=BLACK, anchor="ra")
 
 
 # ---------- 图标绘制 ----------
@@ -495,17 +565,34 @@ def render(data, out, at=None):
     d.line([(312, 112), (312, 396)], fill=LGRAY, width=2)
 
     # 右：日历
-    d.text((332, 118), "%d年%d月" % (at.year, at.month), font=font(FONT_REG, 24), fill=GRAY)
-    fday = font(FONT_BOLD, 132)
+    # 之前右栏只有几行、内容全部靠左，大号日号右边空一大块，
+    # 视觉密度明显比不过左栏（温度/湿度/风/降水）。
+    # 现在改成：每一行都排成「左信息 + 右信息」两段，左右两端都抵到栏边，
+    # 与左栏的饱满度对齐。段与段之间用 draw_pair 量宽避让，绝不重叠。
+    # 顶栏已单列显示过干支纪年与生肖，所以这里不再重复「丙午年·马」。
+    d.text((332, 112), "%d年%d月" % (at.year, at.month),
+           font=font(FONT_REG, 26), fill=GRAY)
+    d.text((RIGHT, 114), "第%d周" % at.isocalendar()[1],
+           font=font(FONT_REG, 22), fill=GRAY, anchor="ra")
+    fday = font(FONT_BOLD, 142)
     ds = str(at.day)
-    d.text((332, 146), ds, font=fday, fill=BLACK)
-    dw = d.textlength(ds, font=fday)
-    d.text((332 + dw + 6, 146 + (132 - 30) // 2), "日", font=font(FONT_REG, 30), fill=GRAY)
-    d.text((332, 296), WEEK[at.weekday()], font=font(FONT_BOLD, 30), fill=BLACK)
-    d.text((332, 340), lunar_str(at.date()), font=font(FONT_REG, 23), fill=BLACK)
+    # 星期与日号同一行、右对齐，把大号数字右侧的空白吃掉
+    big_day(d, 332, 142, ds, fday, font(FONT_REG, 34),
+            WEEK[at.weekday()], font(FONT_BOLD, 36), RIGHT)
     st = solar_term_of(at.date())
-    if st:
-        d.text((332, 376), "今日 " + st, font=font(FONT_REG, 20), fill=GRAY)
+    nxt = next_solar_term(at.date())
+    # 农历行：右端补节气信息（今天是节气就显示「今日 XX」，
+    # 否则显示下一个节气的倒计时），避免非节气日右端整块空着
+    draw_pair(d, 332, RIGHT, 296,
+              lunar_str(at.date()), 26,
+              ("今日 " + st) if st else ("距%s还有%d天" % (nxt[0], nxt[1])),
+              22, lfill=BLACK, rfill=GRAY)
+    doy = at.timetuple().tm_yday
+    left_days = (datetime.date(at.year + 1, 1, 1) - at.date()).days
+    draw_pair(d, 332, RIGHT, 340,
+              "今年第%d天" % doy, 21,
+              "距年底还有%d天" % left_days, 21,
+              lfill=GRAY, rfill=GRAY)
 
     d.line([(M, 412), (RIGHT, 412)], fill=LGRAY, width=2)
 
@@ -544,57 +631,37 @@ def render(data, out, at=None):
     return out
 
 
-def draw_footer(d, left_x, right_x, at):
-    """画底部状态栏。竖屏与横屏共用，位置完全一致。
+# ---- 底部状态栏右侧：电量显示 ----
+#
+# 决定（2026-11-04）：不再让设备端用 eips 叠加实时数字，
+# 改为把「电量：94」整串直接烧进 PNG。
+# 原因：
+#   1) eips 内置字体没有中文字形、也没有 '%'，只能"云端烧中文 + 设备端写纯数字"；
+#   2) eips 用的是字符格坐标，在 600x800 上定位极易错位
+#      （实测行/列参数含义与预想相反，字符格 13.65x38.7 与网格也对不齐），
+#      叠加的数字经常直接跑到画面外；
+#   3) 收益很低：电量每小时才变一次，不值得为它承担错位风险。
+# 若以后确实需要实时数字，下面已记好实测标定值，重新启用设备端叠加即可。
+BATT_TEXT = "电量：94"   # 直接烧进画面的电量文案
+BATT_FONT_SIZE = 21
 
-    电量徽标的像素矩形会同时写进 <outdir>/batt_pos，
-    设备端据此换算 eips 的 col/row 叠加数字。
-    """
+# ---- eips 字符格几何（dash_probe3 v3 实测标定，留档备用）----
+#   命令语法: eips [col] [row] "text"
+#   col0 字形左缘 x=40；row0 字形顶缘 y=0；列宽 13.65；行高 38.7
+#   （20个'8'@row0 最右暗列 x=313 => (313-40-13.65)/19≈13.65；
+#     row20 '8' 顶 y=774 => 774/20=38.7）
+EIPS_X0 = 40
+EIPS_Y0 = 0
+EIPS_CELL_W = 13.65
+EIPS_CELL_H = 38.7
+
+
+def draw_footer(d, left_x, right_x, at):
+    """画底部状态栏：左侧「更新 时间」，右侧「电量：94」。竖屏与横屏共用。"""
     d.text((left_x + 2, BATT_BASE_Y), "更新 " + at.strftime("%m-%d %H:%M"),
            font=font(FONT_REG, 15), fill=BLACK, anchor="ls")
-    slot_l, slot_r = draw_battery_slot(d, right_x, BATT_BASE_Y)
-    return slot_l, slot_r
-
-
-# ---- 电量槽几何（云端渲染与设备端叠加共用同一套数）----
-BATT_LABEL = "电量"
-BATT_PCT = "%"
-BATT_FONT_SIZE = 21
-BATT_SLOT_W = 48       # 数字槽宽度（够放 3 位 ASCII 数字）
-BATT_GAP = 6           # 「电量」与数字槽之间的留白
-BATT_SLOT_R = 6        # 数字槽右边缘到 '%' 的留白
-
-
-def battery_slot_rect(right_x, baseline_y):
-    """返回电量槽像素矩形 (slot_l, slot_r, lab_l, lab_r, top, bottom)。
-
-    排布自右向左：[%][留白][数字槽][留白][电量]
-    设备端把数字右对齐写进 [slot_l, slot_r]，不会压到 '%' 和「电量」。
-    """
-    probe = ImageDraw.Draw(Image.new("L", (8, 8)))
-    f_b = font(FONT_REG, BATT_FONT_SIZE)
-    pw = probe.textlength(BATT_PCT, font=f_b)
-    lw = probe.textlength(BATT_LABEL, font=f_b)
-    slot_r = right_x - pw - BATT_SLOT_R
-    slot_l = slot_r - BATT_SLOT_W
-    lab_r = slot_l - BATT_GAP
-    lab_l = lab_r - lw
-    return slot_l, slot_r, lab_l, lab_r, baseline_y - BATT_FONT_SIZE, baseline_y + 4
-
-
-def draw_battery_slot(d, right_x, baseline_y):
-    """画「电量 <数字槽> %」。数字槽留白，由设备端用 eips 叠加 ASCII 数字。
-
-    槽内画一条极浅的底线，方便肉眼校验设备端数字有没有落在槽内。
-    """
-    f_b = font(FONT_REG, BATT_FONT_SIZE)
-    slot_l, slot_r, lab_l, lab_r, top, bot = battery_slot_rect(right_x, baseline_y)
-    d.text((lab_l, baseline_y), BATT_LABEL, font=f_b, fill=BLACK, anchor="ls")
-    d.text((right_x, baseline_y), BATT_PCT, font=f_b, fill=BLACK, anchor="rs")
-    d.rectangle([slot_l, top, slot_r, bot], fill=WHITE)
-    d.line([(slot_l, bot), (slot_r, bot)], fill=LGRAY, width=1)
-    return slot_l, slot_r
-
+    d.text((right_x, BATT_BASE_Y), BATT_TEXT,
+           font=font(FONT_REG, BATT_FONT_SIZE), fill=BLACK, anchor="rs")
 
 
 # ---------------------------------------------------------------------------
@@ -725,19 +792,28 @@ def render_landscape(data, out, at=None):
     if pp is not None:
         d.text((M + 2, 278), "降水概率 %d%%" % int(round(pp)), font=font(FONT_REG, 19), fill=GRAY)
 
-    # 右栏：日历
+    # 右栏：日历（与竖屏同样思路：每行左右两段，填满整栏）
     d.text((392, 90), "日历", font=font(FONT_REG, 18), fill=GRAY)
-    d.text((392, 112), "%d年%d月" % (at.year, at.month), font=font(FONT_REG, 22), fill=GRAY)
+    st = solar_term_of(at.date())
+    nxt = next_solar_term(at.date())
+    draw_pair(d, 392, RIGHT, 112,
+              "%d年%d月" % (at.year, at.month), 22,
+              "第%d周" % at.isocalendar()[1], 19,
+              lfill=GRAY, rfill=GRAY)
     fday = font(FONT_BOLD, 88)
     ds = str(at.day)
-    d.text((392, 134), ds, font=fday, fill=BLACK)
-    dw = d.textlength(ds, font=fday)
-    d.text((392 + dw + 6, 134 + (88 - 26) // 2), "日", font=font(FONT_REG, 26), fill=GRAY)
-    d.text((392, 238), WEEK[at.weekday()], font=font(FONT_BOLD, 27), fill=BLACK)
-    d.text((392, 276), lunar_str(at.date()), font=font(FONT_REG, 21), fill=BLACK)
-    st = solar_term_of(at.date())
-    if st:
-        d.text((392, 306), "今日 " + st, font=font(FONT_REG, 18), fill=GRAY)
+    big_day(d, 392, 134, ds, fday, font(FONT_REG, 26),
+            WEEK[at.weekday()], font(FONT_BOLD, 28), RIGHT, sep_gap=6)
+    draw_pair(d, 392, RIGHT, 238,
+              lunar_str(at.date()), 21,
+              ("今日 " + st) if st else ("距%s还有%d天" % (nxt[0], nxt[1])),
+              18, lfill=BLACK, rfill=GRAY)
+    doy = at.timetuple().tm_yday
+    left_days = (datetime.date(at.year + 1, 1, 1) - at.date()).days
+    draw_pair(d, 392, RIGHT, 272,
+              "今年第%d天" % doy, 17,
+              "距年底还有%d天" % left_days, 17,
+              lfill=GRAY, rfill=GRAY)
 
     d.line([(M, 336), (RIGHT, 336)], fill=LGRAY, width=2)
 
@@ -749,17 +825,9 @@ def render_landscape(data, out, at=None):
     d.line([(M, 552), (RIGHT, 552)], fill=LGRAY, width=2)
     d.text((M + 2, 560), "更新 " + at.strftime("%m-%d %H:%M"),
            font=font(FONT_REG, 16), fill=BLACK)
-    # 电量：中文与 % 由云端画，数字由设备端 eips 叠加（留空槽）
-    f_b = font(FONT_REG, 21)
-    probe = ImageDraw.Draw(Image.new("L", (8, 8)))
-    pw = probe.textlength(BATT_PCT, font=f_b)
-    lw = probe.textlength(BATT_LABEL, font=f_b)
-    slot_r = RIGHT - pw
-    slot_l = slot_r - BATT_SLOT_W
-    d.text((slot_l - BATT_GAP - lw, 560), BATT_LABEL, font=f_b, fill=BLACK)
-    d.text((RIGHT, 560), BATT_PCT, font=f_b, fill=BLACK)
-    d.rectangle([slot_l, 560 - 18, slot_r, 560 + 5], fill=WHITE)
-    d.line([(slot_l, 560 + 5), (slot_r, 560 + 5)], fill=LGRAY, width=1)
+    # 电量：整串由云端烧入（设备端不再做 eips 叠加）
+    d.text((RIGHT, 560), BATT_TEXT, font=font(FONT_REG, BATT_FONT_SIZE),
+           fill=BLACK, anchor="rs")
 
     # 旋转成 600x800。
     # 用 ROTATE_90（逆时针 90 度）：已用 ASCII 标记实测验证过——
@@ -768,9 +836,7 @@ def render_landscape(data, out, at=None):
     img = img.transpose(Image.ROTATE_90)
 
     img.save(out, "PNG")
-    # 注意：横屏版的状态栏随画面旋转了，所以设备端叠加数字的 col/row
-    # 与竖屏版不同，需要单独的坐标表（见 batt_pos 的 landscape 行）。
-    return out, (slot_l, slot_r)
+    return out, (RIGHT, RIGHT)
 
 
 def city_label():
@@ -814,35 +880,17 @@ if __name__ == "__main__":
                 lf = os.path.join(args.outdir, at.strftime("%Y%m%d_%H") + "_land.png")
                 render_landscape(data, lf, at)
                 names.append(os.path.basename(lf))
-        # 电量槽元数据：云端用实测标定几何直接算出 eips 的 col/row，
-        # 设备端 dashd.sh 直接读取，不再二次换算，避免公式不一致。
-        probe = ImageDraw.Draw(Image.new("L", (8, 8)))
-        f_b = font(FONT_REG, BATT_FONT_SIZE)
-        pw = probe.textlength(BATT_PCT, font=f_b)
-        # ---- 竖屏：槽在底部状态栏右侧（portrait RIGHT = W - 30 = 570）----
-        sl_p, sr_p, _, _, _, _ = battery_slot_rect(W - 30, BATT_BASE_Y)
-        slot_top = BATT_BASE_Y - BATT_FONT_SIZE
-        slot_bot = BATT_BASE_Y + 4
-        slot_cy_p = (slot_top + slot_bot) // 2          # 槽垂直中心像素 y
-        batt_col_p = eips_col(sr_p - 2 - EIPS_CELL_W)   # 最右数字左缘列（留 2px 内边距）
-        batt_row_p = eips_row(slot_cy_p)                # 槽垂直中心行
-        # ---- 横屏：槽在 800x600 画布底部，旋转 90° 后落到最终 600x800 的左侧竖条 ----
-        # 画布坐标 (x,y) -> 最终像素 (HL-1-y, x)，HL=600 为画布高。
-        slot_r_l = (WL - 26) - pw                       # 横屏 RIGHT = WL-26 = 774
-        slot_l_l = slot_r_l - BATT_SLOT_W
-        fin_x_r = (HL - 1) - (560 + 5)                  # 槽底 canvas y=565 -> 最终 x'
-        fin_y_c = (slot_l_l + slot_r_l) // 2            # 槽中心 canvas x -> 最终 y'
-        batt_col_l = eips_col(fin_x_r - 2 - EIPS_CELL_W)
-        batt_row_l = eips_row(fin_y_c)
+        # 电量元数据：设备端已不再做 eips 叠加（改为云端直接烧「电量：94」），
+        # 这个文件只为 CI 流程与将来调试留档，内容不再被设备端读取。
         with open(os.path.join(args.outdir, "batt_pos.txt"), "w", encoding="utf-8") as f:
-            f.write("# 电量叠加位置（竖屏/横屏）。值由 dash_probe3 实测几何直接换算 eips col/row。\n")
-            f.write("# 设备端 dashd.sh 直接读取，不再二次换算。\n")
-            f.write("portrait_batt_col %d\n" % batt_col_p)
-            f.write("portrait_batt_row %d\n" % batt_row_p)
-            f.write("landscape_batt_col %d\n" % batt_col_l)
-            f.write("landscape_batt_row %d\n" % batt_row_l)
-            f.write("# 调试用像素：竖屏槽 x=%d..%d 中心y=%d；横屏最终槽 x≈%d 中心y=%d\n"
-                    % (sl_p, sr_p, slot_cy_p, fin_x_r, fin_y_c))
+            f.write("# 电量显示元数据（当前设备端不读取，仅留档）。\n")
+            f.write("# 现在由云端把「%s」整串烧进 PNG，设备端不做任何 eips 文字叠加。\n" % BATT_TEXT)
+            f.write("#\n")
+            f.write("# 留档：eips 字符格实测标定值（dash_probe3 v3）\n")
+            f.write("#   命令语法 eips [col] [row] \"text\"\n")
+            f.write("#   col0 字形左缘 x=%d；row0 字形顶缘 y=%d；列宽 %.2f；行高 %.2f\n"
+                    % (EIPS_X0, EIPS_Y0, EIPS_CELL_W, EIPS_CELL_H))
+            f.write("#   若将来要恢复设备端实时数字叠加，用这组值换算 col/row 即可。\n")
         # 索引文件：Kindle 抓不到目标图时可据此挑最近的一张
         with open(os.path.join(args.outdir, "index.txt"), "w", encoding="utf-8") as f:
             f.write("\n".join(names) + "\n")
