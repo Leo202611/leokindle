@@ -294,12 +294,14 @@ def draw_curve(d, data, at, x0, y0, w, h):
         d.ellipse([x - 3, y - 3, x + 3, y + 3], fill=BLACK)
 
     f_t = font(FONT_REG, 16)
-    # 温度只标四处：首、末、最高、最低，避免挤成一团
+    # 温度只标四处：首、末、最高、最低，避免挤成一团；白底衬保证在线条附近也清晰
     for k in sorted({0, n - 1, vals.index(max(vals)), vals.index(min(vals))}):
         t = "%d°" % round(vals[k])
         tw = d.textlength(t, font=f_t)
         tx = max(x0, min(px(k) - tw / 2, x0 + w - tw))
-        d.text((tx, py(vals[k]) - 20), t, font=f_t, fill=BLACK)
+        ty = py(vals[k]) - 20
+        d.rectangle([tx - 2, ty - 2, tx + tw + 2, ty + 18], fill=WHITE)
+        d.text((tx, ty), t, font=f_t, fill=BLACK)
 
     f_h = font(FONT_REG, 15)
     for k in range(0, n, 2):             # 每 2 小时标一个刻度
@@ -342,7 +344,7 @@ def fetch():
     _ensure_location()
     url = ("https://api.open-meteo.com/v1/forecast?latitude=%s&longitude=%s"
            "&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,wind_direction_10m"
-           "&hourly=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,wind_direction_10m"
+           "&hourly=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,wind_direction_10m,precipitation_probability"
            "&daily=weather_code,temperature_2m_max,temperature_2m_min"
            "&timezone=%s&forecast_days=6" % (LOCATION["lat"], LOCATION["lon"], TZ))
     req = urllib.request.Request(url, headers={"User-Agent": "kindle-dash/1.0"})
@@ -416,6 +418,9 @@ def render(data, out, at=None):
         if wd is not None:
             line += " %s" % compass(wd)
     d.text((34, 300), line, font=font(FONT_REG, 21), fill=GRAY)
+    pp = cur.get("precipitation_probability")
+    if pp is not None:
+        d.text((34, 348), "降水概率 %d%%" % int(round(pp)), font=font(FONT_REG, 21), fill=GRAY)
 
     # 中缝
     d.line([(400, 120), (400, 380)], fill=LGRAY, width=2)
@@ -426,7 +431,8 @@ def render(data, out, at=None):
     ds = str(at.day)
     d.text((424, 150), ds, font=fday, fill=BLACK)
     dw = d.textlength(ds, font=fday)
-    d.text((424 + dw + 8, 162), "日", font=font(FONT_REG, 30), fill=GRAY)
+    # 「日」与大数字垂直居中对齐、紧贴其后，避免孤立悬浮
+    d.text((424 + dw + 6, 150 + (132 - 30) // 2), "日", font=font(FONT_REG, 30), fill=GRAY)
     d.text((424, 300), WEEK[at.weekday()], font=font(FONT_BOLD, 30), fill=BLACK)
     d.text((424, 344), lunar_str(at.date()), font=font(FONT_REG, 23), fill=BLACK)
     st = solar_term_of(at.date())
@@ -435,8 +441,8 @@ def render(data, out, at=None):
 
     d.line([(30, 406), (W - 30, 406)], fill=LGRAY, width=2)
 
-    # 底部上：未来 12 小时气温曲线
-    if not draw_curve(d, data, at, 36, 414, W - 72, 98):
+    # 底部上：未来 12 小时气温曲线（左右各留边距，避免末点/标注贴边）
+    if not draw_curve(d, data, at, 40, 414, W - 96, 98):
         d.text((36, 460), "（逐小时气温暂不可用）", font=font(FONT_REG, 19), fill=LGRAY)
 
     d.line([(30, 520), (W - 30, 520)], fill=LGRAY, width=2)
