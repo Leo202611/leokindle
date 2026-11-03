@@ -16,7 +16,7 @@ try:
 except Exception:
     TZLOCAL = datetime.timezone(datetime.timedelta(hours=8))
 
-W, H = 800, 600
+W, H = 600, 800   # Kindle 8 (2016) 屏幕为 600x800 竖屏，必须按此尺寸渲染，否则右侧/底部会被裁
 TZ = "Asia%2FShanghai"
 
 # ---------------------------------------------------------------------------
@@ -394,21 +394,23 @@ def render(data, out, at=None):
     if temp is None:
         temp = data["current"].get("temperature_2m", 0)
 
+    M = 30                 # 左右统一边距
+    RIGHT = W - M          # 内容右边界 570
+
     # 顶部：城市 + 问候语 | 时间
-    d.text((30, 24), city_label(), font=font(FONT_BOLD, 30), fill=BLACK)
-    d.text((32, 64), greeting(at.hour) + "，祝你今天顺利", font=font(FONT_REG, 20), fill=GRAY)
+    d.text((M, 22), city_label(), font=font(FONT_BOLD, 30), fill=BLACK)
+    d.text((M + 2, 60), greeting(at.hour) + "，祝你今天顺利", font=font(FONT_REG, 20), fill=GRAY)
     t = at.strftime("%H:%M")
     fbig = font(FONT_BOLD, 40)
-    d.text((W - 30 - d.textlength(t, font=fbig), 24), t, font=fbig, fill=BLACK)
-
-    d.line([(30, 100), (W - 30, 100)], fill=LGRAY, width=2)
+    d.text((RIGHT - d.textlength(t, font=fbig), 20), t, font=fbig, fill=BLACK)
+    d.line([(M, 98), (RIGHT, 98)], fill=LGRAY, width=2)
 
     # 左：当前天气
     ftemp = font(FONT_BOLD, 96)
     ts = "%d°" % round(temp)
-    d.text((34, 130), ts, font=ftemp, fill=BLACK)
-    draw_icon(d, kind, 300, 190, 62)
-    d.text((34, 252), desc, font=font(FONT_BOLD, 32), fill=BLACK)
+    d.text((M + 4, 122), ts, font=ftemp, fill=BLACK)
+    draw_icon(d, kind, 268, 170, 56)
+    d.text((M + 4, 240), desc, font=font(FONT_BOLD, 30), fill=BLACK)
     rh = cur.get("relative_humidity_2m")
     ws = cur.get("wind_speed_10m")
     wd = cur.get("wind_direction_10m")
@@ -417,40 +419,38 @@ def render(data, out, at=None):
         line += "   风 %.0f km/h" % ws
         if wd is not None:
             line += " %s" % compass(wd)
-    d.text((34, 300), line, font=font(FONT_REG, 21), fill=GRAY)
+    d.text((M + 4, 286), line, font=font(FONT_REG, 20), fill=GRAY)
     pp = cur.get("precipitation_probability")
     if pp is not None:
-        d.text((34, 348), "降水概率 %d%%" % int(round(pp)), font=font(FONT_REG, 21), fill=GRAY)
+        d.text((M + 4, 322), "降水概率 %d%%" % int(round(pp)), font=font(FONT_REG, 20), fill=GRAY)
 
     # 中缝
-    d.line([(400, 120), (400, 380)], fill=LGRAY, width=2)
+    d.line([(312, 112), (312, 396)], fill=LGRAY, width=2)
 
     # 右：日历
-    d.text((424, 126), "%d年%d月" % (at.year, at.month), font=font(FONT_REG, 24), fill=GRAY)
+    d.text((332, 118), "%d年%d月" % (at.year, at.month), font=font(FONT_REG, 24), fill=GRAY)
     fday = font(FONT_BOLD, 132)
     ds = str(at.day)
-    d.text((424, 150), ds, font=fday, fill=BLACK)
+    d.text((332, 146), ds, font=fday, fill=BLACK)
     dw = d.textlength(ds, font=fday)
-    # 「日」与大数字垂直居中对齐、紧贴其后，避免孤立悬浮
-    d.text((424 + dw + 6, 150 + (132 - 30) // 2), "日", font=font(FONT_REG, 30), fill=GRAY)
-    d.text((424, 300), WEEK[at.weekday()], font=font(FONT_BOLD, 30), fill=BLACK)
-    d.text((424, 344), lunar_str(at.date()), font=font(FONT_REG, 23), fill=BLACK)
+    d.text((332 + dw + 6, 146 + (132 - 30) // 2), "日", font=font(FONT_REG, 30), fill=GRAY)
+    d.text((332, 296), WEEK[at.weekday()], font=font(FONT_BOLD, 30), fill=BLACK)
+    d.text((332, 340), lunar_str(at.date()), font=font(FONT_REG, 23), fill=BLACK)
     st = solar_term_of(at.date())
     if st:
-        d.text((424, 380), "今日 " + st, font=font(FONT_REG, 21), fill=GRAY)
+        d.text((332, 376), "今日 " + st, font=font(FONT_REG, 20), fill=GRAY)
 
-    d.line([(30, 406), (W - 30, 406)], fill=LGRAY, width=2)
+    d.line([(M, 412), (RIGHT, 412)], fill=LGRAY, width=2)
 
-    # 底部上：未来 12 小时气温曲线（左右各留边距，避免末点/标注贴边）
-    if not draw_curve(d, data, at, 40, 414, W - 96, 98):
-        d.text((36, 460), "（逐小时气温暂不可用）", font=font(FONT_REG, 19), fill=LGRAY)
+    # 中部：未来 12 小时气温曲线（左右各留边距，末点与标注不贴边）
+    if not draw_curve(d, data, at, M + 6, 420, W - 2 * (M + 6), 176):
+        d.text((M + 6, 500), "（逐小时气温暂不可用）", font=font(FONT_REG, 19), fill=LGRAY)
 
-    d.line([(30, 520), (W - 30, 520)], fill=LGRAY, width=2)
+    d.line([(M, 610), (RIGHT, 610)], fill=LGRAY, width=2)
 
-    # 底部下：未来三天，紧凑横排（小图标 + 一行文字），把竖向空间让给曲线
+    # 下部：未来两天，两列等宽居中（外侧留白一致）
     f_one = font(FONT_REG, 19)
-    for col, off in enumerate((1, 2, 3)):
-        x0c = 40 + col * 247
+    for col, off in enumerate((1, 2)):
         dd = at.date() + datetime.timedelta(days=off)
         i = daily_index(daily, dd)
         if i is None:
@@ -462,21 +462,25 @@ def render(data, out, at=None):
             lo = daily["temperature_2m_min"][i]
         except Exception:
             continue
-        label = ("明天" if off == 1 else "周" + WEEK[dd.weekday()][2])
-        draw_icon(d, dk, x0c + 24, 548, 20)
-        d.text((x0c + 54, 548), "%s %d°/%d° %s" % (label, round(hi), round(lo), dh),
-               font=f_one, fill=BLACK, anchor="lm")
+        label = ("明天" if off == 1 else WEEK[dd.weekday()])
+        txt = "%s %d°/%d° %s" % (label, round(hi), round(lo), dh)
+        tw = d.textlength(txt, font=f_one)
+        cell_c = M + 135 + col * 270          # 两格各 270 宽，居中于各自格内
+        start = cell_c - (54 + tw) / 2
+        draw_icon(d, dk, start + 22, 660, 22)
+        d.text((start + 54, 660), txt, font=f_one, fill=BLACK, anchor="lm")
 
-    # 右下角：返回按钮（设备端触摸该区域即退出仪表盘、恢复成普通阅读器）
-    bx0, by0, bx1, by1 = 700, 558, 792, 594
+    # 底部左：更新时间（电量由设备端叠加在其右侧，同为黑色以形成统一状态栏）
+    d.text((M + 2, 762), "更新 " + at.strftime("%m-%d %H:%M"),
+           font=font(FONT_REG, 15), fill=BLACK, anchor="ls")
+
+    # 底部右：返回按钮（设备端触摸该区域即退出仪表盘）
+    bx0, by0, bx1, by1 = 442, 736, 570, 786
     d.rectangle([bx0, by0, bx1, by1], outline=BLACK, width=2)
     fbtn = font(FONT_BOLD, 22)
     tbtn = "返回"
     tw = d.textlength(tbtn, font=fbtn)
     d.text(((bx0 + bx1) / 2, (by0 + by1) / 2), tbtn, font=fbtn, fill=BLACK, anchor="mm")
-
-    d.text((32, 590), "更新 " + at.strftime("%m-%d %H:%M"),
-           font=font(FONT_REG, 15), fill=LGRAY, anchor="ls")
 
     img.save(out, "PNG")
     return out
