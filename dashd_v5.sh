@@ -42,7 +42,59 @@ GUI_FREEZE="com.lab126.gui.refresh"
 BASE_CDN="https://gcore.jsdelivr.net/gh/Leo202611/leokindle@dash"
 BASE_PAGES="https://Leo202611.github.io/leokindle"
 
+# ---------- 真实电量上报（A 方案：云端中转）----------
+# 矛盾：PNG 是 CI 用 --hours 26 在云端提前批量渲染好的，渲染那一刻
+# 并不知道设备当时的电量。所以走「设备每小时上报 -> 云端记录 ->
+# CI 下一轮读回并 --batt 注入 -> 设备再取图」的闭环。
+#
+# 设备读电量本身零成本（Probe5 实测属性真实存在）：
+#   lipc-get-prop com.lab126.powerd battLevel   -> 0..100
+#   lipc-get-prop com.lab126.powerd isCharging  -> 0/1
+#   sysfs 兜底：/sys/class/power_supply/bd7181x_bat/capacity
+#
+# 中转站选 ntfy.sh：匿名可写可读、无 token 无密钥、消息缓存 12h，
+# 正好覆盖每小时一次的节奏。之前验证过的 webhook.site token 只有 ~7 天
+# 有效期，写进不易更新的设备脚本会静默失效，故不做主通道。
+BATT_TOPIC="k8dash_batt_7f3c9e2a"
+BATT_URL="https://ntfy.sh/$BATT_TOPIC"
+BATT_LAST=/mnt/us/dash/last_batt.json
+# CI 每小时 :17 用最新电量重渲染整套图；:35 再取一次同一小时的图，
+# 就能把本小时刚上报的电量显示出来（否则整点那张滞后约 1 小时）。
+BATT_FOLLOW_MIN=35
+BATT_FOLLOW_H=""           # 已做过跟进取图的小时，防止一小时内重复取图
+
 log() { echo "[$(date +"%m-%d %H:%M:%S")] $*" >> "$LOG"; }
+
+# 读实测电量并上报。上报失败绝不能影响取图与显示：所有 curl 带超时，
+# 且调用方不检查返回值。正常证书校验失败时降级 -k 重试一次（老固件 CA 可能过期）。
+report_batt() {
+    B=$(lipc-get-prop com.lab126.powerd battLevel 2>/dev/null)
+    case "$B" in ''|*[!0-9]*)
+        B=$(cat /sys/class/power_supply/bd7181x_bat/capacity 2>/dev/null) ;;
+    esac
+    case "$B" in ''|*[!0-9]*)
+        log "电量上报: 读不到 battLevel / capacity，跳过"
+        return 1 ;;
+    esac
+    if [ "$B" -lt 0 ] 2>/dev/null || [ "$B" -gt 100 ] 2>/dev/null; then
+        log "电量上报: 数值越界 [$B]，跳过"
+        return 1
+    fi
+    C=$(lipc-get-prop com.lab126.powerd isCharging 2>/dev/null)
+    case "$C" in 1) ;; *) C=0 ;; esac
+    TS=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)
+    PAYLOAD="{\"batt\":$B,\"charging\":$C,\"ts\":\"$TS\"}"
+    if curl -s -m 15 -o /dev/null -X POST -H "Content-Type: application/json" \
+            --data-binary "$PAYLOAD" "$BATT_URL" 2>>"$LOG" || \
+       curl -sk -m 15 -o /dev/null -X POST -H "Content-Type: application/json" \
+            --data-binary "$PAYLOAD" "$BATT_URL" 2>>"$LOG"; then
+        echo "$PAYLOAD" > "$BATT_LAST" 2>/dev/null
+        log "电量上报成功: $PAYLOAD"
+        return 0
+    fi
+    log "电量上报失败（不影响显示）: $PAYLOAD"
+    return 1
+}
 
 # 当前版式对应的图片路径。ORIENT 变化时必须重新调用，
 # 否则横竖屏的取图/绘图会写到同一个文件上。
@@ -472,6 +524,8 @@ eips -f -g "$IMG" >> "$LOG" 2>&1
 sleep 6
 eips -f -g "$IMG" >> "$LOG" 2>&1
 log "首屏绘制+补绘完成，关闭 WiFi 进入低功耗循环"
+# 启动时补报一次电量：画面已经画好了，此处耗时不影响用户看到首屏。
+report_batt
 wifi_off
 
 # 启动触摸监听与电源键监听（GUI 已停，此时本进程是触摸的唯一读者）
@@ -490,6 +544,7 @@ while :; do
         rm -f "$ROTATE_FLAG"
         log "版式切换为 $ORIENT，立即重取"
         wifi_on; sync_clock >/dev/null 2>&1
+        report_batt
         h=$(hourfile)
         refresh_screen "$h" && LAST=$h
         wifi_off
@@ -501,6 +556,7 @@ while :; do
         rm -f "$REFRESH_FLAG"
         log "收到刷新请求，立即重取"
         wifi_on; sync_clock >/dev/null 2>&1
+        report_batt
         h=$(hourfile)
         if refresh_screen "$h"; then
             LAST=$h; log "已刷新 -> $h"
@@ -513,9 +569,32 @@ while :; do
 
     keep_awake
     hd=$(date +%Y%m%d_%H)
+
+    # ---- 电量跟进取图 ----
+    # 整点取到的那张图是上一轮 CI（上小时 :17）渲染的，电量滞后约 1 小时。
+    # CI 在本小时 :17 已用刚上报的电量重渲染整套图，所以到 :35 再取一次
+    # **同一个小时**的图，就能把本小时实测电量显示出来。
+    # 三重保险：只在已成功画过图（LAST 非空）、当前小时与 LAST 一致、
+    # 且本小时尚未跟过时执行；一小时最多一次，失败也不影响现有画面。
+    # ${mm#0} 去掉前导零，避免 ash 把 "08"/"09" 当八进制解析报错。
+    mm=$(date +%M); mm=${mm#0}; [ -z "$mm" ] && mm=0
+    if [ -n "$LAST" ] && [ "$hd" = "$LAST" ] && \
+       [ "$BATT_FOLLOW_H" != "$hd" ] && \
+       [ "$mm" -ge "$BATT_FOLLOW_MIN" ] 2>/dev/null; then
+        BATT_FOLLOW_H="$hd"
+        log "电量跟进: :$mm 重取 $LAST（CI 应已按最新电量重渲染）"
+        wifi_on
+        report_batt
+        refresh_screen "$LAST" || log "电量跟进取图失败，保留当前画面"
+        wifi_off
+        continue
+    fi
+
     [ "$hd" = "$LAST" ] && continue
     wifi_on
     sync_clock >/dev/null 2>&1
+    # 整点这一报最关键：CI :17 读到的就是它。
+    report_batt
     h=$(hourfile)
     if refresh_screen "$h"; then
         LAST=$h; log "已刷新 -> $h"

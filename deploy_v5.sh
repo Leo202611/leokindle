@@ -32,6 +32,11 @@
 #   /mnt/us/extensions/dash/bin/*.sh    KUAL 入口（由上面拷贝）
 #   /mnt/us/extensions/dash/menu.json   菜单（本地生成，不依赖设备上任何遗留文件）
 #
+# v5 内含「真实电量上报」：dashd_v5.sh 每小时读 lipc battLevel/isCharging，
+# 经 WiFi POST 到 ntfy.sh 公共 topic；CI 读回后用 --batt 注入 PNG。
+# 因此本安装器下发的守护脚本必须是最新版，旧版不会显示真实电量。
+# 覆盖采用 mv（替换目录项），正在运行的旧实例仍持旧 inode，不会读坏脚本。
+#
 # 电脑端服务：wifi_srv/ 目录 + python3 -m http.server 8899
 export PATH=/usr/sbin:/usr/bin:/bin:/sbin:$PATH
 

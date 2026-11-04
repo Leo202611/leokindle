@@ -40,10 +40,25 @@ jobs:
       - name: 安装依赖
         run: pip install -q -r requirements.txt
 
+      # A 方案（真实电量云端中转）：设备每小时把 lipc 实测电量 POST 到
+      # ntfy.sh 公共 topic，这里读回 2 小时内最新一条，写进 GITHUB_ENV。
+      # 读不到 / 过期 / JSON 非法时 DASH_BATT 为空，画面回落「电量：--」，
+      # 绝不伪造数字。诊断信息由 batt_relay.py 写 stderr，不会污染 env。
+      - name: 读取设备上报的真实电量（云端中转）
+        run: python3 batt_relay.py >> "$GITHUB_ENV"
+
       - name: 批量渲染逐小时图（竖屏 + 横屏两套）
         run: |
           mkdir -p out
-          python3 render.py --hours 26 --outdir out --landscape
+          ARGS="--hours 26 --outdir out --landscape"
+          if [ -n "$DASH_BATT" ]; then
+            ARGS="$ARGS --batt $DASH_BATT"
+          fi
+          if [ "$DASH_CHARGING" = "1" ]; then
+            ARGS="$ARGS --charging"
+          fi
+          echo "渲染参数: $ARGS（DASH_BATT=${DASH_BATT:-空} DASH_CHARGING=${DASH_CHARGING:-0}）"
+          python3 render.py $ARGS
           echo "---- 产物 ----"
           ls -l out | head -8
           cat out/index.txt | head -3
