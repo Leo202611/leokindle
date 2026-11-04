@@ -30,8 +30,18 @@
 #   /mnt/us/dash/dash_update.sh         在线更新（KUAL 点一下即可，无需电脑/终端）
 #   /mnt/us/dash/cur_p.png              竖屏缓存图
 #   /mnt/us/dash/cur_l.png              横屏缓存图
-#   /mnt/us/extensions/dash/bin/*.sh    KUAL 入口（由上面拷贝）
-#   /mnt/us/extensions/dash/menu.json   菜单（本地生成，不依赖设备上任何遗留文件）
+#   /mnt/us/dash/ss_config.sh          待机画面定时更新 · 配置（可配 SS_HOURS）
+#   /mnt/us/dash/ss_update_once.sh     单次换图（KUAL「立即更新」+ 调度器共用）
+#   /mnt/us/dash/ss_scheduler.sh       RTC 事件驱动调度器
+#   /mnt/us/dash/ss_enable.sh          启用自启 + 停常亮守护 + 立即刷一次
+#   /mnt/us/dash/ss_disable.sh         停用自启 + 清 RTC 闹钟
+#   /mnt/us/extensions/dash/bin/*.sh   KUAL 入口（由上面拷贝）
+#   /mnt/us/extensions/dash/menu.json  菜单（本地生成，不依赖设备上任何遗留文件）
+#
+# 【2026-11-04 19:48 主线切换】用户定案：待机画面每天 6/9/12/15/18 共 5 次更新，
+# 设备真正休眠（RTC 唤醒），不再跑常亮仪表盘守护进程。两组菜单互斥，
+# 启用屏保定时更新会自动停掉 dashd，否则 keep_awake 会让屏保永远不出现。
+# 云端对应产物是 dash 分支的固定槽位图 ss_06/09/12/15/18.png + ss_latest.png。
 #
 # 电量链路当前默认停用（2026-11-04 12:37 用户要求省电）：
 #   dashd_v5.sh 的 BATT_REPORT=0 → 不读电量、不 POST、也不做 :35 跟进取图；
@@ -54,9 +64,11 @@ say() {
 }
 
 # 脚本类文件：必须全部经 WiFi 下发，一个都不能依赖 USB 预置
-SH_FILES="dashd_v5.sh dash_on_v5.sh dash_on_land.sh dash_on_port.sh dash_off.sh dash_update.sh install_screensaver.sh"
+# ss_*.sh 是「待机画面定时更新」(6/9/12/15/18)：RTC 唤醒 + 单次换图 + 重新休眠，
+# 取代常亮仪表盘守护进程成为主线。ss_config.local 若存在则绝不覆盖（本地改频率用）。
+SH_FILES="dashd_v5.sh dash_on_v5.sh dash_on_land.sh dash_on_port.sh dash_off.sh dash_update.sh install_screensaver.sh ss_config.sh ss_update_once.sh ss_scheduler.sh ss_enable.sh ss_disable.sh"
 # 其中需要装进 KUAL bin/ 的入口
-ENTRIES="dash_on_v5.sh dash_on_land.sh dash_on_port.sh dash_off.sh dash_update.sh install_screensaver.sh"
+ENTRIES="dash_on_v5.sh dash_on_land.sh dash_on_port.sh dash_off.sh dash_update.sh install_screensaver.sh ss_update_once.sh ss_enable.sh ss_disable.sh"
 
 mkdir -p "$DST" "$EXT/bin" 2>/dev/null
 : > "$LOG" 2>/dev/null
@@ -149,21 +161,33 @@ pull_png() {
 pull_png cur_p.png ""
 pull_png cur_l.png "land"
 
-# ---- 2.5 屏保图（linkss 格式：bg_ss00.png, 600x800 8位灰度）----
-# 供 KUAL「设为屏保」使用。优先电脑 HTTP，回退 GitHub main。
-if curl -sL -m 40 -o "$DST/bg_ss00.png.tmp" "http://$SRV/bg_ss00.png" 2>/dev/null \
+# ---- 2.5 屏保底图（linkss 格式：bg_ss00.png, 600x800 8位灰度）----
+# 优先取云端每次 CI 刷新的 ss_latest.png，避免把中午 12:00 生成的静态图
+# 当成屏保装进去（2026-11-04 用户看到旧画面就是这个原因）。
+# 顺序：GitHub/dash 槽位最新 -> 电脑 HTTP -> GitHub/main 静态兜底。
+SS_OK=0
+if gh_raw "ss_latest.png" dash "$DST/bg_ss00.png.tmp" \
    && [ -s "$DST/bg_ss00.png.tmp" ] && png_ok "$DST/bg_ss00.png.tmp"; then
     mv "$DST/bg_ss00.png.tmp" "$DST/bg_ss00.png"
-    say "OK  bg_ss00.png (电脑, $(wc -c < "$DST/bg_ss00.png") bytes)"
-else
+    say "OK  bg_ss00.png (GitHub/dash ss_latest, $(wc -c < "$DST/bg_ss00.png") bytes)"
+    SS_OK=1
+fi
+if [ "$SS_OK" != "1" ] && curl -sL -m 20 -o "$DST/bg_ss00.png.tmp" \
+        "http://$SRV/bg_ss00.png" 2>/dev/null \
+   && [ -s "$DST/bg_ss00.png.tmp" ] && png_ok "$DST/bg_ss00.png.tmp"; then
+    mv "$DST/bg_ss00.png.tmp" "$DST/bg_ss00.png"
+    say "OK  bg_ss00.png (电脑 HTTP, $(wc -c < "$DST/bg_ss00.png") bytes)"
+    SS_OK=1
+fi
+if [ "$SS_OK" != "1" ] && gh_raw "bg_ss00.png" main "$DST/bg_ss00.png.tmp" \
+   && [ -s "$DST/bg_ss00.png.tmp" ] && png_ok "$DST/bg_ss00.png.tmp"; then
+    mv "$DST/bg_ss00.png.tmp" "$DST/bg_ss00.png"
+    say "OK  bg_ss00.png (GitHub/main 静态兜底)"
+    SS_OK=1
+fi
+if [ "$SS_OK" != "1" ]; then
     rm -f "$DST/bg_ss00.png.tmp"
-    if gh_raw "bg_ss00.png" main "$DST/bg_ss00.png" \
-       && [ -s "$DST/bg_ss00.png" ] && png_ok "$DST/bg_ss00.png"; then
-        say "OK  bg_ss00.png (GitHub/main, $(wc -c < "$DST/bg_ss00.png") bytes)"
-    else
-        rm -f "$DST/bg_ss00.png"
-        say "WARN bg_ss00.png 未取到（不影响仪表盘，仅「设为屏保」暂不可用）"
-    fi
+    say "WARN bg_ss00.png 未取到（不影响定时更新，仅首次设屏保的底图暂缺）"
 fi
 
 # ---- 3. 装 KUAL 入口（全部来自上面 WiFi 下载的副本）----
@@ -184,18 +208,44 @@ for e in $ENTRIES; do
 done
 
 # ---- 4. 生成菜单 ----
-# 只引用上面 5 个 WiFi 下发的入口，不再指向设备上遗留的探针/诊断脚本，
-# 这样整个安装是自包含的：设备原先是什么状态都不影响。
-# 第 5 项「在线更新」是长期自举钩子：装过一次 v5 之后，
-# 后续所有更新都可以在 KUAL 里点一下完成，不再需要 SSH 或电脑。
+# 分两组，明确「休眠待机画面」与「常亮仪表盘」互斥：
+#   第一组（默认主线）：linkss 屏保 + RTC 定时唤醒，设备真正休眠，撑一周；
+#   第二组（旧方案）：常亮仪表盘，keep_awake 会阻止休眠，屏保不会出现。
+# 「在线更新(WiFi)」是长期自举钩子：装过一次后所有更新都在 KUAL 点一下完成。
 MENU="$EXT/menu.json"
 [ -f "$MENU" ] && cp "$MENU" "$MENU.bak_wifi" 2>/dev/null
 cat > "$MENU.new" <<'JSON'
 {
 	"items": [
 		{
-			"name": "气象仪表盘 Dash",
+			"name": "待机画面（休眠显示 · 省电）",
 			"priority": 1,
+			"items": [
+				{
+					"name": "立即更新待机画面(WiFi)",
+					"action": "bin/ss_update_once.sh",
+					"exitmenu": true
+				},
+				{
+					"name": "启用定时更新(6/9/12/15/18)",
+					"action": "bin/ss_enable.sh",
+					"exitmenu": true
+				},
+				{
+					"name": "停用定时更新",
+					"action": "bin/ss_disable.sh",
+					"exitmenu": true
+				},
+				{
+					"name": "设为屏保(首次装 linkss 后)",
+					"action": "bin/install_screensaver.sh",
+					"exitmenu": true
+				}
+			]
+		},
+		{
+			"name": "常亮仪表盘（与屏保二选一）",
+			"priority": 2,
 			"items": [
 				{
 					"name": "启动仪表盘(沿用版式)",
@@ -220,11 +270,6 @@ cat > "$MENU.new" <<'JSON'
 				{
 					"name": "在线更新(WiFi)",
 					"action": "bin/dash_update.sh",
-					"exitmenu": true
-				},
-				{
-					"name": "设为屏保(bg_ss00.png)",
-					"action": "bin/install_screensaver.sh",
 					"exitmenu": true
 				}
 			]

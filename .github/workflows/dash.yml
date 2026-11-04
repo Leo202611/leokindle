@@ -72,6 +72,21 @@ jobs:
           echo "---- 电量槽元数据 ----"
           cat out/batt_pos.txt
 
+      - name: 生成 6/9/12/15/18 固定槽位待机图
+        run: |
+          python3 make_slots.py out
+          echo "---- 槽位映射 ----"
+          cat out/slots.txt
+          ls -l out/ss_*.png
+          python3 - <<'PY'
+          from PIL import Image
+          import glob
+          for p in sorted(glob.glob("out/ss_*.png")):
+              im = Image.open(p)
+              assert im.size == (600, 800) and im.mode == "L", (p, im.size, im.mode)
+              print("OK", p, im.size, im.mode)
+          PY
+
       - name: 配置 Pages（未开通时会自动开通）
         id: pages_conf
         uses: actions/configure-pages@v5
@@ -94,8 +109,8 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout --orphan dash_tmp
           git rm -rf --cached . >/dev/null 2>&1 || true
-          cp out/*.png out/index.txt out/batt_pos.txt .
-          git add -f *.png index.txt batt_pos.txt
+          cp out/*.png out/index.txt out/batt_pos.txt out/slots.txt .
+          git add -f *.png index.txt batt_pos.txt slots.txt
           git commit -m "dash $(date -u +'%Y-%m-%dT%H:%MZ')"
           git push -f origin dash_tmp:dash
 
@@ -104,3 +119,4 @@ jobs:
           echo "Pages URL: ${{ steps.deployment.outputs.page_url }}"
           echo "主通道: ${{ steps.deployment.outputs.page_url }}/$(head -1 out/index.txt)"
           echo "备用通道: https://gcore.jsdelivr.net/gh/Leo202611/leokindle@dash/$(head -1 out/index.txt)"
+          echo "待机槽位图: https://gcore.jsdelivr.net/gh/Leo202611/leokindle@dash/ss_09.png"

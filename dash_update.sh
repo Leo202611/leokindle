@@ -54,11 +54,26 @@ if [ ! -s "$ENTRY" ]; then
     exit 1
 fi
 
-# restart 保持版式强制重启，新版守护进程才会被加载。
-sh "$ENTRY" restart >> "$LOG" 2>&1
+# 【重要】不能无条件重启常亮仪表盘守护进程。
+# B 方案（linkss 屏保）下 dashd 的 keep_awake() 会阻止休眠，屏保永远不会出现。
+# 所以只重启「当前真正启用的那一种模式」；两种都没启用就只更新文件。
+if [ -f /mnt/us/dash/ss_enabled ]; then
+    say "已启用待机画面定时更新 -> 重装并重启屏保调度服务"
+    sh /mnt/us/extensions/dash/bin/ss_enable.sh >> "$LOG" 2>&1
+else
+    DPID=$(cat /var/local/dashd.pid 2>/dev/null)
+    if [ -n "$DPID" ] && [ -d "/proc/$DPID" ]; then
+        say "常亮仪表盘在运行 -> restart 保持版式重启"
+        sh "$ENTRY" restart >> "$LOG" 2>&1
+    else
+        say "两种模式都未启用，只更新文件，不启动任何守护进程"
+    fi
+fi
 sleep 6
 say "当前版式: $(cat /mnt/us/dash/orient 2>/dev/null)"
-say "守护日志尾部:"
+say "屏保日志尾部:"
+tail -8 /mnt/us/dash/ss.log 2>/dev/null | sed 's/^/  /'
+say "更新日志尾部:"
 tail -8 "$LOG" 2>/dev/null | sed 's/^/  /'
 say "===== 在线更新完成 ====="
 exit 0

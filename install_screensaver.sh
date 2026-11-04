@@ -4,7 +4,10 @@
 # 用法：KUAL 菜单「设为屏保」点一下即可；或 sh install_screensaver.sh。
 set -e
 DST="/mnt/us/dash"
+# 优先用定时更新拉下来的实时图；bg_ss00.png 只是 deploy 附带的静态兜底图
+# （2026-11-04 之前那张是中午 12:00 生成的，用户看到的旧画面就是它）。
 SRC="$DST/bg_ss00.png"
+[ -s "$DST/ss_current.png" ] && SRC="$DST/ss_current.png"
 LINK_DIR="/mnt/us/linkss/screensavers"
 LOG="$DST/screensaver.log"
 SRV="${DASH_SRV:-192.168.110.46:8899}"
