@@ -30,7 +30,7 @@ for f in ss_config.sh ss_update_once.sh ss_scheduler.sh; do
             && chmod 755 "$RUN/$f" 2>/dev/null \
             && say "装入 tmpfs: $f"
     else
-        say "WARN 缺 $D/$f（请先点「在线更新(WiFi)」）"
+        say "WARN 缺 $D/${f}（请先点「在线更新(WiFi)」）"
     fi
 done
 

@@ -21,7 +21,13 @@ SS_HOURS="6 9 12 15 18"
 SS_LOCAL_SRV=""
 SS_GH_API="https://api.github.com/repos/Leo202611/leokindle/contents"
 SS_GH_BRANCH="dash"
-SS_CDN="https://cdn.jsdelivr.net/gh/Leo202611/leokindle@dash"
+# gcore.jsdelivr.net 是 workflow 自己用的备用通道，实测可取到 600x800 L 槽位图；
+# cdn.jsdelivr.net 在部分网络下 SSL 握手失败，不作为主备用。
+SS_CDN="https://gcore.jsdelivr.net/gh/Leo202611/leokindle@dash"
+SS_RAW="https://raw.githubusercontent.com/Leo202611/leokindle/dash"
+# Kindle 8 固件 CA 证书较旧，HTTPS 常失败（电量上报链路已踩过这个坑）。
+# 这些图都是公开静态资源、无密钥，默认允许 curl -k；设 0 可恢复严格校验。
+SS_INSECURE=1
 
 # linkss 屏保目录与文件名（源码 shuffless 要求小写 .png + bg_ssNN 命名）
 SS_LINK_DIR="/mnt/us/linkss/screensavers"

@@ -84,7 +84,7 @@ catch wait result
 exit [lindex $result 3]
 EXP_SCRIPT
 
-echo "· 通过 SSH 触发 WiFi 安装（版式=$MODE）..."
+echo "· 通过 SSH 触发 WiFi 安装（版式=${MODE}）..."
 OK=0
 for PW in "" root mario alpine kindle fiona 123456; do
     if expect "$EXP" "$PW" "$IP" "$PORT" "$REMOTE"; then

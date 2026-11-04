@@ -418,7 +418,7 @@ touch_monitor() {
                     # 少了这一句，切换后仍然往上一个版式的缓存位取图/画图，
                     # 结果是"切了横屏但画出来的还是竖屏那张"。
                     set_img
-                    log "版式切换为 $ORIENT，图片路径改为 $IMG"
+                    log "版式切换为 ${ORIENT}，图片路径改为 $IMG"
                     touch "$ROTATE_FLAG"
                 else
                     log "短按 (x=$press_x y=$press_y)，退出到阅读器"
@@ -563,11 +563,11 @@ power_monitor() {
         cur_stamp=$(power_stamp)
         # 主判据：IRQ 计数变大（单调递增，最可靠）
         if [ -n "$cur_irq" ] && [ -n "$prev_irq" ] && [ "$cur_irq" -gt "$prev_irq" ] 2>/dev/null; then
-            log "检测到电源键（IRQ $POWER_IRQ: $prev_irq -> $cur_irq），退出仪表盘"
+            log "检测到电源键（IRQ $POWER_IRQ: $prev_irq -> ${cur_irq}），退出仪表盘"
         # 兜底判据：dmesg 水位线变大（IRQ 读不到时用）
         elif [ -z "$cur_irq" ] && [ -n "$cur_stamp" ] && [ -n "$prev_stamp" ] && \
              [ "$(awk -v a="$prev_stamp" -v b="$cur_stamp" 'BEGIN{print (b>a)?1:0}')" = "1" ]; then
-            log "检测到电源键（dmesg 水位线 $prev_stamp -> $cur_stamp），退出仪表盘"
+            log "检测到电源键（dmesg 水位线 $prev_stamp -> ${cur_stamp}），退出仪表盘"
         else
             prev_irq="$cur_irq"
             prev_stamp="$cur_stamp"
@@ -598,7 +598,7 @@ watchdog() {
             # 这时若再拉一个，就会有两个守护进程抢同一块屏幕。
             newpid=$(cat "$PIDF" 2>/dev/null)
             if [ -n "$newpid" ] && [ "$newpid" != "$mainpid" ] && [ -d "/proc/$newpid" ]; then
-                log "看门狗: 已有新实例 $newpid，退出，不重复拉起"
+                log "看门狗: 已有新实例 ${newpid}，退出，不重复拉起"
                 exit 0
             fi
             log "看门狗: 主进程 $mainpid 已消失，重新拉起"
@@ -728,7 +728,7 @@ while :; do
     # 用户长按切换了版式：立刻重取对应图
     if [ -f "$ROTATE_FLAG" ]; then
         rm -f "$ROTATE_FLAG"
-        log "版式切换为 $ORIENT，立即重取"
+        log "版式切换为 ${ORIENT}，立即重取"
         wifi_on; sync_clock >/dev/null 2>&1
         report_batt
         h=$(hourfile)
@@ -785,7 +785,7 @@ while :; do
            [ "$BATT_FOLLOW_H" != "$hd" ] && \
            [ "$mm" -ge "$BATT_FOLLOW_MIN" ] 2>/dev/null; then
             BATT_FOLLOW_H="$hd"
-            log "电量跟进: :$mm 重取 $LAST（CI 应已按最新电量重渲染）"
+            log "电量跟进: :$mm 重取 ${LAST}（CI 应已按最新电量重渲染）"
             wifi_on
             report_batt
             refresh_screen "$LAST" || log "电量跟进取图失败，保留当前画面"
@@ -817,7 +817,7 @@ while :; do
     if refresh_screen "$h"; then
         LAST=$h; log "已刷新 -> $h"
     else
-        log "刷新失败($h)，保留上一张 $LAST；5 秒后重试一轮"
+        log "刷新失败($h)，保留上一张 ${LAST}；5 秒后重试一轮"
         sleep 5
         refresh_screen "$h" && LAST=$h
     fi

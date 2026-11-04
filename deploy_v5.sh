@@ -76,19 +76,31 @@ say "===== v5 纯 WiFi 安装 ====="
 say "时刻: $(date)"
 say "源: http://$SRV  (回退: GitHub main/dash)"
 
+# 电脑 HTTP 只在真的可达时才用：Mac 与 Kindle 常不在同一 WiFi，
+# 否则 12 个脚本每个都要白等 30s，「在线更新」会卡好几分钟。
+SRV_OK=0
+if curl -sL -m 3 -o /dev/null "http://$SRV/deploy_v5.sh" 2>/dev/null; then
+    SRV_OK=1
+    say "电脑 HTTP 可达，优先本地"
+else
+    say "电脑 HTTP 不可达，全部走 GitHub（避免逐文件超时）"
+fi
+
 # ---- 通用校验 ----
-png_ok() { head -c 8 "$1" 2>/dev/null | od -An -tx1 | grep -q '89 50 4e 47'; }
+# od 各版本分隔符可能是一格或两格空格，去空格后比十六进制串才可靠
+png_ok() { [ "$(head -c 8 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "89504e470d0a1a0a" ]; }
 
 gh_raw() {
     # $1=文件名 $2=分支 $3=输出路径
-    curl -sL -m 40 -H "Accept: application/vnd.github.raw" \
+    # -k：Kindle 8 固件 CA 证书较旧，HTTPS 常失败；这里只取公开静态文件，无密钥。
+    curl -sLk -m 40 -H "Accept: application/vnd.github.raw" \
          -o "$3" "$GH_API/$1?ref=$2" 2>/dev/null
 }
 
 # ---- 1. 拉脚本（电脑 HTTP -> GitHub main）----
 pull_sh() {
     f="$1"
-    if curl -sL -m 30 -o "$DST/$f.tmp" "http://$SRV/$f" 2>/dev/null; then
+    if [ "$SRV_OK" = "1" ] && curl -sL -m 30 -o "$DST/$f.tmp" "http://$SRV/$f" 2>/dev/null; then
         sz=$(wc -c < "$DST/$f.tmp" 2>/dev/null)
         if [ "${sz:-0}" -gt 200 ] && head -c 60 "$DST/$f.tmp" | grep -q '#!/bin/sh'; then
             mv "$DST/$f.tmp" "$DST/$f"; chmod 755 "$DST/$f"
@@ -125,7 +137,7 @@ gh_png() {
 pull_png() {
     dst="$1"; land="$2"
     # 2a. 电脑 HTTP（刚渲染好的当小时图，最快）
-    if curl -sL -m 40 -o "$dst.tmp" "http://$SRV/$dst" 2>/dev/null; then
+    if [ "$SRV_OK" = "1" ] && curl -sL -m 40 -o "$dst.tmp" "http://$SRV/$dst" 2>/dev/null; then
         sz=$(wc -c < "$dst.tmp" 2>/dev/null)
         if [ "${sz:-0}" -gt 10000 ] && png_ok "$dst.tmp"; then
             mv "$dst.tmp" "$dst"; say "OK  $dst (电脑, $sz bytes)"; return 0
@@ -172,7 +184,7 @@ if gh_raw "ss_latest.png" dash "$DST/bg_ss00.png.tmp" \
     say "OK  bg_ss00.png (GitHub/dash ss_latest, $(wc -c < "$DST/bg_ss00.png") bytes)"
     SS_OK=1
 fi
-if [ "$SS_OK" != "1" ] && curl -sL -m 20 -o "$DST/bg_ss00.png.tmp" \
+if [ "$SS_OK" != "1" ] && [ "$SRV_OK" = "1" ] && curl -sL -m 20 -o "$DST/bg_ss00.png.tmp" \
         "http://$SRV/bg_ss00.png" 2>/dev/null \
    && [ -s "$DST/bg_ss00.png.tmp" ] && png_ok "$DST/bg_ss00.png.tmp"; then
     mv "$DST/bg_ss00.png.tmp" "$DST/bg_ss00.png"

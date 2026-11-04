@@ -32,9 +32,11 @@ shebang_ok() {
 say "===== 在线更新开始（全程 WiFi）====="
 rm -f "$TMP"
 
-if curl -sL -m 30 -o "$TMP" "http://$SRV/deploy_v5.sh" 2>/dev/null && shebang_ok "$TMP"; then
+# 电脑与 Kindle 常不在同一 WiFi：本地源只给 4 秒，别让用户干等 30 秒。
+if curl -sL -m 4 -o "$TMP" "http://$SRV/deploy_v5.sh" 2>/dev/null && shebang_ok "$TMP"; then
     say "安装器来源: 电脑 HTTP ($SRV)"
-elif curl -sL -m 40 -H "Accept: application/vnd.github.raw" \
+# -k：Kindle 8 固件 CA 证书较旧，HTTPS 常失败；这里只取公开脚本，无密钥。
+elif curl -sLk -m 40 -H "Accept: application/vnd.github.raw" \
         -o "$TMP" "$GH_API/deploy_v5.sh?ref=main" 2>/dev/null && shebang_ok "$TMP"; then
     say "安装器来源: GitHub main"
 else

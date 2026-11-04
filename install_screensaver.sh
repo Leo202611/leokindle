@@ -13,7 +13,8 @@ LOG="$DST/screensaver.log"
 SRV="${DASH_SRV:-192.168.110.46:8899}"
 GH_API="https://api.github.com/repos/Leo202611/leokindle/contents"
 say() { echo "[$(date +'%m-%d %H:%M:%S')] $*" >> "$LOG"; }
-png_ok() { head -c 8 "$1" 2>/dev/null | od -An -tx1 | grep -q '89 50 4e 47'; }
+# od 各版本分隔符可能是一格或两格空格，去空格后比十六进制串才可靠
+png_ok() { [ "$(head -c 8 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "89504e470d0a1a0a" ]; }
 
 say "===== 设为屏保 ====="
 

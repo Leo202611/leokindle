@@ -19,7 +19,11 @@ CONF=/mnt/us/dash/ss_config.sh
 [ -n "${SS_LOCAL_SRV:-}" ]   || SS_LOCAL_SRV=""
 [ -n "${SS_GH_API:-}" ]      || SS_GH_API="https://api.github.com/repos/Leo202611/leokindle/contents"
 [ -n "${SS_GH_BRANCH:-}" ]   || SS_GH_BRANCH="dash"
-[ -n "${SS_CDN:-}" ]         || SS_CDN="https://cdn.jsdelivr.net/gh/Leo202611/leokindle@dash"
+[ -n "${SS_CDN:-}" ]         || SS_CDN="https://gcore.jsdelivr.net/gh/Leo202611/leokindle@dash"
+[ -n "${SS_RAW:-}" ]         || SS_RAW="https://raw.githubusercontent.com/Leo202611/leokindle/dash"
+SS_INSECURE="${SS_INSECURE:-1}"
+CK=""
+[ "$SS_INSECURE" = "1" ] && CK="-k"
 [ -n "${SS_LINK_DIR:-}" ]    || SS_LINK_DIR="/mnt/us/linkss/screensavers"
 [ -n "${SS_BK_DIR:-}" ]      || SS_BK_DIR="/mnt/us/linkss/backup_custom"
 [ -n "${SS_DST_DIR:-}" ]     || SS_DST_DIR="/mnt/us/dash"
@@ -36,8 +40,9 @@ log() {
     echo "$*"
 }
 
-# 日志限长：避免每天 4 次无限追加写 FAT
-SZ=$(wc -c < "$SS_LOG" 2>/dev/null)
+# 日志限长：避免每天 5 次无限追加写 FAT（首次运行文件还不存在，先判存在）
+SZ=0
+[ -f "$SS_LOG" ] && SZ=$(wc -c < "$SS_LOG" 2>/dev/null)
 if [ "${SZ:-0}" -gt 65536 ]; then
     tail -150 "$SS_LOG" > "$SS_LOG.t" 2>/dev/null && mv "$SS_LOG.t" "$SS_LOG"
 fi
@@ -47,7 +52,10 @@ fi
 # 600=0x00000258 800=0x00000320 灰度8位=0x08 0x00
 png_ok() {
     [ -s "$1" ] || return 1
-    head -c 8 "$1" 2>/dev/null | od -An -tx1 | grep -q '89 50 4e 47' || return 1
+    # 不用 grep 匹配带空格的 od 输出：各版本 od 分隔符可能是一格或两格空格，
+    # 直接去掉全部空格后比十六进制串才可靠（否则会把合法 PNG 全部误杀）。
+    MAGIC=$(head -c 8 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')
+    [ "$MAGIC" = "89504e470d0a1a0a" ] || return 1
     DIM=$(dd if="$1" bs=1 skip=16 count=8 2>/dev/null | od -An -tx1 | tr -d ' \n')
     [ "$DIM" = "0000025800000320" ] || return 1
     TYP=$(dd if="$1" bs=1 skip=24 count=2 2>/dev/null | od -An -tx1 | tr -d ' \n')
@@ -65,10 +73,10 @@ fetch_one() {
     [ "$(date +%s)" -lt "$DEADLINE" ] || return 1
     rm -f "$TMP"
     if [ "$F_GH" = "gh" ]; then
-        curl -sL -m "$F_TMO" -H "Accept: application/vnd.github.raw" \
+        curl -sL $CK -m "$F_TMO" -H "Accept: application/vnd.github.raw" \
              -o "$TMP" "$F_URL" 2>/dev/null
     else
-        curl -sL -m "$F_TMO" -o "$TMP" "$F_URL" 2>/dev/null
+        curl -sL $CK -m "$F_TMO" -o "$TMP" "$F_URL" 2>/dev/null
     fi
     png_ok "$TMP"
 }
@@ -80,7 +88,7 @@ HM=$(date +%H); HH=$(( ${HM#0} ))
 FN=""
 case " $SS_HOURS " in *" $HH "*) FN=$(printf 'ss_%02d.png' "$HH") ;; esac
 [ -n "$FN" ] || FN="ss_latest.png"
-log "本地 $HH 时，目标图: $FN（更新点: $SS_HOURS）"
+log "本地 $HH 时，目标图: ${FN}（更新点: ${SS_HOURS}）"
 
 # ---- 2. 按需开 WiFi（连不上立刻放弃，绝不空等） ----
 WIFI_WAS=1
@@ -107,8 +115,13 @@ if [ "$ST" = "CONNECTED" ]; then
         GOT=1; log "OK GitHub 槽位图 $FN"
     fi
     if [ "$GOT" != "1" ]; then
+        if fetch_one "$SS_RAW/$FN?cb=$CB" "$SS_CURL_T" plain; then
+            GOT=1; log "OK raw.githubusercontent $FN"
+        fi
+    fi
+    if [ "$GOT" != "1" ]; then
         if fetch_one "$SS_CDN/$FN?cb=$CB" "$SS_CURL_T" plain; then
-            GOT=1; log "OK jsDelivr 槽位图 $FN"
+            GOT=1; log "OK jsDelivr(gcore) 槽位图 $FN"
         fi
     fi
     if [ "$GOT" != "1" ] && [ -n "$SS_LOCAL_SRV" ]; then
@@ -116,18 +129,26 @@ if [ "$ST" = "CONNECTED" ]; then
             GOT=1; log "OK 电脑 HTTP $FN"
         fi
     fi
+    # API 匿名限额 60 次/小时，万一被同网其它设备打满，走不限额的最新图通道
     if [ "$GOT" != "1" ] && [ "$FN" != "ss_latest.png" ]; then
         if fetch_one "$SS_GH_API/ss_latest.png?ref=$SS_GH_BRANCH&cb=$CB" "$SS_CURL_T" gh; then
-            GOT=1; log "OK 回退 ss_latest.png"
+            GOT=1; log "OK 回退 ss_latest.png (API)"
+        fi
+    fi
+    if [ "$GOT" != "1" ] && [ "$FN" != "ss_latest.png" ]; then
+        if fetch_one "$SS_CDN/ss_latest.png?cb=$CB" "$SS_CURL_T" plain; then
+            GOT=1; log "OK 回退 ss_latest.png (CDN)"
         fi
     fi
     if [ "$GOT" != "1" ]; then
         # 最后兜底：读 index.txt 拿当前小时图
-        curl -sL -m 10 -H "Accept: application/vnd.github.raw" \
+        curl -sL $CK -m 10 -H "Accept: application/vnd.github.raw" \
              -o "$IDX" "$SS_GH_API/index.txt?ref=$SS_GH_BRANCH&cb=$CB" 2>/dev/null
+        [ -s "$IDX" ] || curl -sL $CK -m 10 -o "$IDX" \
+             "$SS_CDN/index.txt?cb=$CB" 2>/dev/null
         LF=$(grep '\.png' "$IDX" 2>/dev/null | grep -v '_land' | head -1)
-        if [ -n "$LF" ] && fetch_one "$SS_GH_API/$LF?ref=$SS_GH_BRANCH&cb=$CB" "$SS_CURL_T" gh; then
-            GOT=1; log "OK 回退 index 首图 $LF"
+        if [ -n "$LF" ] && fetch_one "$SS_CDN/$LF?cb=$CB" "$SS_CURL_T" plain; then
+            GOT=1; log "OK 回退 CDN index 首图 $LF"
         fi
     fi
 else
