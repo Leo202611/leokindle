@@ -59,9 +59,13 @@ fi
 # 【重要】不能无条件重启常亮仪表盘守护进程。
 # B 方案（linkss 屏保）下 dashd 的 keep_awake() 会阻止休眠，屏保永远不会出现。
 # 所以只重启「当前真正启用的那一种模式」；两种都没启用就只更新文件。
-if [ -f /mnt/us/dash/ss_enabled ]; then
-    say "已启用待机画面定时更新 -> 重装并重启屏保调度服务"
-    sh /mnt/us/extensions/dash/bin/ss_enable.sh >> "$LOG" 2>&1
+if [ -f /mnt/us/dash/ss_enabled ] && [ ! -f /mnt/us/dash/ss_no_auto ]; then
+    # deploy_v5.sh 已在安装末尾自动重启过 dashss；这里不要再启一次，
+    # 否则调度器会被连续重启、白白多唤醒取一次图。
+    say "屏保定时更新已启用，安装器已重启 dashss，无需重复启用"
+elif [ -f /mnt/us/dash/ss_enabled ]; then
+    say "检测到 ss_no_auto：手动重启 dashss 以加载新脚本"
+    sh /mnt/us/extensions/dash/bin/ss_enable.sh quick >> "$LOG" 2>&1
 else
     DPID=$(cat /var/local/dashd.pid 2>/dev/null)
     if [ -n "$DPID" ] && [ -d "/proc/$DPID" ]; then

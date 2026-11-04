@@ -11,6 +11,18 @@
 export PATH=/usr/sbin:/usr/bin:/bin:/sbin:$PATH
 mkdir -p /mnt/us/dash
 
+# 【屏保模式保护】设备上旧的 dash_update.sh（19:07 装入的版本）在安装结束后
+# 会无条件调用本脚本 restart。若此时已启用「待机画面定时更新」，拉起常亮守护
+# 会让 keep_awake() 阻止休眠、屏保永远不出现。这里直接忽略这次 restart；
+# 用户主动点「启动常亮仪表盘」是不带参数的调用，不受影响。
+if [ "$1" = "restart" ] || [ "$1" = "r" ]; then
+    if [ -f /mnt/us/dash/ss_enabled ]; then
+        echo "[$(date +'%m-%d %H:%M:%S')] dash_on_v5: 屏保定时更新已启用，忽略 restart" \
+            >> /mnt/us/dash/dashd.log 2>/dev/null
+        exit 0
+    fi
+fi
+
 # ---- 版式参数：land=横屏 / port=竖屏 / restart=保持版式重启 / 空=沿用当前 ----
 # KUAL 的 action 不能带参数，所以由 dash_on_land.sh / dash_on_port.sh
 # 两个薄封装调用本脚本并传参；menu.json 指向那两个文件。

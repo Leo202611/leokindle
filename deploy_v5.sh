@@ -220,68 +220,62 @@ for e in $ENTRIES; do
 done
 
 # ---- 4. 生成菜单 ----
-# 分两组，明确「休眠待机画面」与「常亮仪表盘」互斥：
-#   第一组（默认主线）：linkss 屏保 + RTC 定时唤醒，设备真正休眠，撑一周；
-#   第二组（旧方案）：常亮仪表盘，keep_awake 会阻止休眠，屏保不会出现。
-# 「在线更新(WiFi)」是长期自举钩子：装过一次后所有更新都在 KUAL 点一下完成。
+# 【2026-11-04 20:21】用户反馈「没看到启用定时更新」。原因之一是把菜单
+# 拆成了两个分组，需要再点进子菜单才看得到。这里改回用户熟悉的**单一分组**，
+# 9 项全部平铺，「启用定时更新」排第一，打开 KUAL 就能看到。
+# 「在线更新(WiFi)」是长期自举钩子：旧菜单里本来就有这一项，点它即可拉到本菜单。
 MENU="$EXT/menu.json"
 [ -f "$MENU" ] && cp "$MENU" "$MENU.bak_wifi" 2>/dev/null
 cat > "$MENU.new" <<'JSON'
 {
 	"items": [
 		{
-			"name": "待机画面（休眠显示 · 省电）",
+			"name": "气象仪表盘 Dash",
 			"priority": 1,
 			"items": [
 				{
-					"name": "立即更新待机画面(WiFi)",
-					"action": "bin/ss_update_once.sh",
-					"exitmenu": true
-				},
-				{
-					"name": "启用定时更新(6/9/12/15/18)",
+					"name": "1 启用定时更新(6/9/12/15/18)",
 					"action": "bin/ss_enable.sh",
 					"exitmenu": true
 				},
 				{
-					"name": "停用定时更新",
+					"name": "2 立即更新待机画面(WiFi)",
+					"action": "bin/ss_update_once.sh",
+					"exitmenu": true
+				},
+				{
+					"name": "3 停用定时更新",
 					"action": "bin/ss_disable.sh",
 					"exitmenu": true
 				},
 				{
-					"name": "设为屏保(首次装 linkss 后)",
+					"name": "4 设为屏保(装 linkss 后)",
 					"action": "bin/install_screensaver.sh",
 					"exitmenu": true
-				}
-			]
-		},
-		{
-			"name": "常亮仪表盘（与屏保二选一）",
-			"priority": 2,
-			"items": [
+				},
 				{
-					"name": "启动仪表盘(沿用版式)",
-					"action": "bin/dash_on_v5.sh",
+					"name": "5 在线更新(WiFi) - 拉新菜单",
+					"action": "bin/dash_update.sh",
 					"exitmenu": true
 				},
 				{
-					"name": "切换为横屏",
-					"action": "bin/dash_on_land.sh",
-					"exitmenu": true
-				},
-				{
-					"name": "切换为竖屏",
-					"action": "bin/dash_on_port.sh",
-					"exitmenu": true
-				},
-				{
-					"name": "关闭仪表盘",
+					"name": "6 关闭仪表盘(屏保模式)",
 					"action": "bin/dash_off.sh",
 					"exitmenu": true
 				},
 				{
-					"name": "在线更新(WiFi)",
-					"action": "bin/dash_update.sh",
+					"name": "7 启动常亮仪表盘(与屏保二选一)",
+					"action": "bin/dash_on_v5.sh",
+					"exitmenu": true
+				},
+				{
+					"name": "8 切换为横屏",
+					"action": "bin/dash_on_land.sh",
+					"exitmenu": true
+				},
+				{
+					"name": "9 切换为竖屏",
+					"action": "bin/dash_on_port.sh",
 					"exitmenu": true
 				}
 			]
@@ -327,6 +321,21 @@ if [ -n "$BOOT" ]; then
     say "当前版式: $(cat $DST/orient 2>/dev/null)"
     say "守护日志尾部:"
     tail -12 "$DST/dashd.log" 2>/dev/null | sed 's/^/  /'
+fi
+
+# ---- 6.5 自动启用待机画面定时更新（仅「只安装不启动」时）----
+# 用户只有 KUAL 菜单，且设备上那份 19:07 的旧菜单里没有 ss_*.sh 的入口，
+# 容易出现「在线更新点过了，却找不到启用定时更新」。这里让「在线更新(WiFi)」
+# 点一次就把屏保定时链路装好并拉起；菜单更新后用户再打开即可看到新项。
+# 不想自动启用：在设备上建一个空文件 /mnt/us/dash/ss_no_auto 即可。
+if [ -z "$BOOT" ] && [ -f "$DST/ss_enable.sh" ] && [ ! -f "$DST/ss_no_auto" ]; then
+    say "---- 自动启用待机画面定时更新(6/9/12/15/18) ----"
+    sh "$EXT/bin/ss_enable.sh" quick >> "$LOG" 2>&1
+    if [ -f "$DST/ss_enabled" ]; then
+        say "OK 已自动启用（服务 dashss）；想取消自动启用可建 $DST/ss_no_auto"
+    else
+        say "WARN 自动启用未完成，请手动点菜单第 1 项「启用定时更新」"
+    fi
 fi
 
 say "===== 安装完成（全程 WiFi，未使用 USB）====="

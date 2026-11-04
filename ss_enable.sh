@@ -12,13 +12,19 @@ say() { echo "[$(date +'%m-%d %H:%M:%S')] $*" >> "$LOG" 2>/dev/null; echo "$*"; 
 
 say "===== 启用待机画面定时更新 ====="
 
-# 1) 常亮仪表盘与屏保互斥：dashd 的 keep_awake() 会阻止休眠，屏保永远不会出现
-if [ -f "$E/dash_off.sh" ]; then
-    sh "$E/dash_off.sh" >> "$LOG" 2>&1
-    say "已停止常亮仪表盘守护进程"
+# 1) 常亮仪表盘与屏保互斥：dashd 的 keep_awake() 会阻止休眠，屏保永远不会出现。
+#    这里不调用旧版 dash_off.sh —— 它会 initctl start lab126_gui，在 KUAL 动作里
+#    动 GUI 可能把菜单自己关掉，导致后面的启用步骤跑不完。只精确停守护进程。
+touch /var/local/dash_stop 2>/dev/null
+DPID=$(cat /var/local/dashd.pid 2>/dev/null)
+if [ -n "$DPID" ] && [ -d "/proc/$DPID" ]; then
+    kill "$DPID" 2>/dev/null
+    say "已停止常亮仪表盘 pid=${DPID}"
 fi
+sleep 1
 pkill -f 'dashd.*\.sh' 2>/dev/null
-rm -f /var/local/dash_stop 2>/dev/null
+rm -f /var/local/dash_stop /var/local/dashd.pid 2>/dev/null
+say "常亮守护已清理（未改 GUI）"
 
 # 2) 运行脚本复制进 tmpfs：社区实测调度器若在 /mnt/us 上持有打开的文件句柄，
 #    FAT/FUSE 卸载时会损坏簇链，进而搞坏整个 extensions 目录。
@@ -35,7 +41,11 @@ for f in ss_config.sh ss_update_once.sh ss_scheduler.sh; do
 done
 
 # 3) 先立刻刷新一次，用户按电源键就能看到新图（修正中午 12:00 静态图）
-if [ -f "$RUN/ss_update_once.sh" ]; then
+#    quick 模式（由 deploy_v5.sh 在线更新调用）：跳过同步刷图，避免 KUAL 动作
+#    被 60 秒下载拖住；调度器启动时的「启动补刷」会自己做这一次更新。
+if [ "$1" = "quick" ]; then
+    say "quick 模式：跳过同步刷图，交由调度器启动补刷"
+elif [ -f "$RUN/ss_update_once.sh" ]; then
     sh "$RUN/ss_update_once.sh" >> "$LOG" 2>&1
     say "已做一次立即更新"
 fi
