@@ -55,11 +55,22 @@ else
 fi
 
 # 4) 注册 upstart 自启（rootfs 默认只读，需 mntroot rw）
+# 【2026-11-05 修复】/tmp 是 tmpfs，重启即清空。原来只在启用时把脚本复制进
+# /tmp/dashss，开机时 upstart 按 start on started lab126_gui 拉起服务却找不到
+# 脚本，重启后定时更新就悄悄失效了。加 pre-start，每次服务启动都从
+# /mnt/us/dash 重新复制一次，重启可自愈。
 cat > /tmp/dashss.conf <<'CONF'
 start on started lab126_gui
 stop on stopping lab126_gui
 respawn
 respawn limit 5 60
+pre-start script
+    mkdir -p /tmp/dashss
+    cp /mnt/us/dash/ss_config.sh /tmp/dashss/ 2>/dev/null
+    cp /mnt/us/dash/ss_update_once.sh /tmp/dashss/ 2>/dev/null
+    cp /mnt/us/dash/ss_scheduler.sh /tmp/dashss/ 2>/dev/null
+    chmod 755 /tmp/dashss/*.sh 2>/dev/null
+end script
 exec /bin/sh /tmp/dashss/ss_scheduler.sh
 CONF
 if [ -d /etc/upstart ]; then
@@ -78,8 +89,14 @@ else
     setsid /bin/sh "$RUN/ss_scheduler.sh" >> "$LOG" 2>&1 < /dev/null &
 fi
 
-# 5) 标记录：dash_update.sh 在线更新后据此重启屏保服务而非常亮守护进程
-echo "$(date +'%m-%d %H:%M:%S')" > "$D/ss_enabled"
+# 5) 标记：dash_update.sh 在线更新后据此重启屏保服务而非常亮守护进程。
+#    内容写清启动方式，以后读日志能判断服务是否真的起来了。
+MODE="upstart"
+if ! initctl status dashss 2>/dev/null | grep -q 'running'; then
+    MODE="setsid(重启后需重新点一次)"
+fi
+echo "$(date +'%m-%d %H:%M:%S') mode=$MODE" > "$D/ss_enabled"
+say "服务状态: ${MODE}"
 
 if [ ! -d /mnt/us/linkss/screensavers ]; then
     say "WARN 未检测到 linkss：请先 KUAL/Helper/Install MR Packages（或 ;log mrpi）安装屏保 hack"

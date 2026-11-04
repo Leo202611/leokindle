@@ -25,28 +25,40 @@ RUN_DIR=/tmp/dashss
 
 log() { echo "[$(date +'%m-%d %H:%M:%S')] [sched] $*" >> "$SS_LOG" 2>/dev/null; }
 
-# RTC 闹钟：优先 powerd 属性，失败回退 sysfs wakealarm（绝对 UTC 秒）
+# RTC 闹钟：lipc 属性 + sysfs 双保险。
+# powerd 的 rtcWakeup 只在 readyToSuspend 等状态接受，其它状态会返回
+# lipcPropErrInvalidState；但 /sys/class/rtc/rtc0/wakealarm 是内核 RTC 接口，
+# 不依赖 powerd 状态。两个都设（时间相同，不冲突），只要有一个生效就能醒来。
 set_rtc_wakeup() {
     S="$1"
     [ "$S" -gt 0 ] || return 0
+    OK=0
     if lipc-set-prop -i com.lab126.powerd rtcWakeup "$S" >/dev/null 2>&1; then
         log "RTC(lipc) ${S}s 后唤醒"
-    else
-        ABS=$(( $(date -u +%s) + S ))
-        WA="/sys/class/rtc/rtc${SS_RTC}/wakealarm"
-        if [ -e "$WA" ]; then
-            echo 0 > "$WA" 2>/dev/null
-            echo "$ABS" > "$WA" 2>/dev/null && log "RTC(sysfs) ${S}s 后唤醒"
-        else
-            log "WARN RTC 闹钟设置失败（本次可能不会被唤醒）"
+        OK=1
+    fi
+    ABS=$(( $(date -u +%s) + S ))
+    WA="/sys/class/rtc/rtc${SS_RTC}/wakealarm"
+    if [ -e "$WA" ]; then
+        echo 0 > "$WA" 2>/dev/null
+        if echo "$ABS" > "$WA" 2>/dev/null; then
+            log "RTC(sysfs) ${S}s 后唤醒 (epoch ${ABS})"
+            OK=1
         fi
     fi
+    [ "$OK" = "1" ] || log "WARN RTC 闹钟设置失败（本次可能不会被唤醒）"
 }
 
 # 事件驱动等待：挂起前设闹钟，唤醒后按剩余时间重新设。
 # 不 sleep 长轮询，避免 SoC 在等待期间反复醒来空转。
 wait_for_suspend() {
     END=$(( $(date +%s) + $1 ))
+    # 【关键】先主动设一次闹钟，不能只等 readyToSuspend 事件。
+    # 调度器启动时设备可能已经处于屏保/休眠（readyToSuspend 早就发生过），
+    # 那样永远等不到事件、闹钟没设、设备直接睡死 —— 这正是 6:00 不更新的
+    # 典型成因之一。先设好，后面收到事件再按剩余时间刷新即可。
+    REM=$(( END - $(date +%s) ))
+    [ "$REM" -gt 0 ] && set_rtc_wakeup "$REM"
     while true; do
         REM=$(( END - $(date +%s) ))
         [ "$REM" -le 0 ] && break
