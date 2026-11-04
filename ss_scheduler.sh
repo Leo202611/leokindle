@@ -25,28 +25,31 @@ RUN_DIR=/tmp/dashss
 
 log() { echo "[$(date +'%m-%d %H:%M:%S')] [sched] $*" >> "$SS_LOG" 2>/dev/null; }
 
-# RTC 闹钟：lipc 属性 + sysfs 双保险。
-# powerd 的 rtcWakeup 只在 readyToSuspend 等状态接受，其它状态会返回
-# lipcPropErrInvalidState；但 /sys/class/rtc/rtc0/wakealarm 是内核 RTC 接口，
-# 不依赖 powerd 状态。两个都设（时间相同，不冲突），只要有一个生效就能醒来。
+# RTC 闹钟：只用 powerd 的 rtcWakeup —— 上游社区验证过的唯一路径。
+#
+# 【2026-11-05 07:37 回退】今早曾加过「lipc + 写 /sys/class/rtc/rtc0/wakealarm」
+# 双保险，装了那版后用户反馈 Kindle 不定时自我重启。原因：powerd 用相对秒数、
+# sysfs 用绝对 epoch，两者抢同一个 RTC；而本机做过校时（dash_fixtime.sh），
+# 时钟一旦有偏差，写进去的 ABS 就是「过去」，alarm 立即触发 -> 反复唤醒/重启。
+# 上游 kndl-online-screensaver 除禁用时清闹钟外，从不写 sysfs，是有道理的。
+# 现在恢复为只走 lipc，并留两个保护：总开关 ss_no_rtc、60 秒设置节流。
+RTC_LAST=0
 set_rtc_wakeup() {
     S="$1"
     [ "$S" -gt 0 ] || return 0
-    OK=0
+    # 应急总开关：设备上建 /mnt/us/dash/ss_no_rtc 即完全不碰 RTC
+    [ -f /mnt/us/dash/ss_no_rtc ] && { log "ss_no_rtc 存在，跳过 RTC 设置"; return 0; }
+    # 节流：powerd 状态抖动时避免 60 秒内反复写 RTC
+    NOW=$(date +%s)
+    if [ "$RTC_LAST" != "0" ] && [ $(( NOW - RTC_LAST )) -lt 60 ]; then
+        return 0
+    fi
+    RTC_LAST=$NOW
     if lipc-set-prop -i com.lab126.powerd rtcWakeup "$S" >/dev/null 2>&1; then
         log "RTC(lipc) ${S}s 后唤醒"
-        OK=1
+    else
+        log "RTC(lipc) 被拒（当前非 readyToSuspend），不写 sysfs"
     fi
-    ABS=$(( $(date -u +%s) + S ))
-    WA="/sys/class/rtc/rtc${SS_RTC}/wakealarm"
-    if [ -e "$WA" ]; then
-        echo 0 > "$WA" 2>/dev/null
-        if echo "$ABS" > "$WA" 2>/dev/null; then
-            log "RTC(sysfs) ${S}s 后唤醒 (epoch ${ABS})"
-            OK=1
-        fi
-    fi
-    [ "$OK" = "1" ] || log "WARN RTC 闹钟设置失败（本次可能不会被唤醒）"
 }
 
 # 事件驱动等待：挂起前设闹钟，唤醒后按剩余时间重新设。

@@ -63,13 +63,14 @@ cat > /tmp/dashss.conf <<'CONF'
 start on started lab126_gui
 stop on stopping lab126_gui
 respawn
-respawn limit 5 60
+respawn limit 3 300
 pre-start script
     mkdir -p /tmp/dashss
     cp /mnt/us/dash/ss_config.sh /tmp/dashss/ 2>/dev/null
     cp /mnt/us/dash/ss_update_once.sh /tmp/dashss/ 2>/dev/null
     cp /mnt/us/dash/ss_scheduler.sh /tmp/dashss/ 2>/dev/null
     chmod 755 /tmp/dashss/*.sh 2>/dev/null
+    test -f /tmp/dashss/ss_scheduler.sh || exit 1
 end script
 exec /bin/sh /tmp/dashss/ss_scheduler.sh
 CONF
@@ -96,6 +97,8 @@ if ! initctl status dashss 2>/dev/null | grep -q 'running'; then
     MODE="setsid(重启后需重新点一次)"
 fi
 echo "$(date +'%m-%d %H:%M:%S') mode=$MODE" > "$D/ss_enabled"
+# 手动启用即表示用户同意自动模式，撤掉「停用」时写的禁止自动启用标记
+rm -f "$D/ss_no_auto" 2>/dev/null
 say "服务状态: ${MODE}"
 
 if [ ! -d /mnt/us/linkss/screensavers ]; then
