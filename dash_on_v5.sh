@@ -11,13 +11,16 @@
 export PATH=/usr/sbin:/usr/bin:/bin:/sbin:$PATH
 mkdir -p /mnt/us/dash
 
-# ---- 版式参数：land=横屏 / port=竖屏 / 空=沿用当前 ----
+# ---- 版式参数：land=横屏 / port=竖屏 / restart=保持版式重启 / 空=沿用当前 ----
 # KUAL 的 action 不能带参数，所以由 dash_on_land.sh / dash_on_port.sh
 # 两个薄封装调用本脚本并传参；menu.json 指向那两个文件。
+# restart 供「在线更新」使用：脚本更新后必须重启实例才会加载新代码，
+# 但不能借 land/port 来重启，否则会顺手把用户的横竖屏改掉。
 FORCE=0
 case "$1" in
-    land|l)   echo l > /mnt/us/dash/orient; FORCE=1 ;;
-    port|p)   echo p > /mnt/us/dash/orient; FORCE=1 ;;
+    land|l)     echo l > /mnt/us/dash/orient; FORCE=1 ;;
+    port|p)     echo p > /mnt/us/dash/orient; FORCE=1 ;;
+    restart|r)  FORCE=1 ;;
 esac
 
 # 当前版式对应的缓存图。原来这里写死 cur_p.png，

@@ -27,6 +27,7 @@
 #   /mnt/us/dash/dash_on_land.sh        横屏启动
 #   /mnt/us/dash/dash_on_port.sh        竖屏启动
 #   /mnt/us/dash/dash_off.sh            关闭
+#   /mnt/us/dash/dash_update.sh         在线更新（KUAL 点一下即可，无需电脑/终端）
 #   /mnt/us/dash/cur_p.png              竖屏缓存图
 #   /mnt/us/dash/cur_l.png              横屏缓存图
 #   /mnt/us/extensions/dash/bin/*.sh    KUAL 入口（由上面拷贝）
@@ -52,9 +53,9 @@ say() {
 }
 
 # 脚本类文件：必须全部经 WiFi 下发，一个都不能依赖 USB 预置
-SH_FILES="dashd_v5.sh dash_on_v5.sh dash_on_land.sh dash_on_port.sh dash_off.sh"
+SH_FILES="dashd_v5.sh dash_on_v5.sh dash_on_land.sh dash_on_port.sh dash_off.sh dash_update.sh"
 # 其中需要装进 KUAL bin/ 的入口
-ENTRIES="dash_on_v5.sh dash_on_land.sh dash_on_port.sh dash_off.sh"
+ENTRIES="dash_on_v5.sh dash_on_land.sh dash_on_port.sh dash_off.sh dash_update.sh"
 
 mkdir -p "$DST" "$EXT/bin" 2>/dev/null
 : > "$LOG" 2>/dev/null
@@ -150,18 +151,25 @@ pull_png cur_l.png "land"
 # ---- 3. 装 KUAL 入口（全部来自上面 WiFi 下载的副本）----
 for e in $ENTRIES; do
     if [ -f "$DST/$e" ]; then
-        cp "$DST/$e" "$EXT/bin/$e" 2>/dev/null \
+        # 必须「写临时文件 + mv 替换目录项」，不能直接 cp 覆盖目标：
+        # 在线更新时 dash_update.sh 正在被执行，就地截断会写坏它的 inode。
+        # mv 是改名，运行中的脚本仍持有旧 inode，可以安全跑完。
+        cp "$DST/$e" "$EXT/bin/$e.tmp" 2>/dev/null \
+            && mv "$EXT/bin/$e.tmp" "$EXT/bin/$e" 2>/dev/null \
             && chmod 755 "$EXT/bin/$e" 2>/dev/null \
             && say "OK  入口 $EXT/bin/$e" \
             || say "FAIL 安装 $e"
+        rm -f "$EXT/bin/$e.tmp"
     else
         say "FAIL 源缺失 $e"
     fi
 done
 
 # ---- 4. 生成菜单 ----
-# 只引用上面 4 个 WiFi 下发的入口，不再指向设备上遗留的探针/诊断脚本，
+# 只引用上面 5 个 WiFi 下发的入口，不再指向设备上遗留的探针/诊断脚本，
 # 这样整个安装是自包含的：设备原先是什么状态都不影响。
+# 第 5 项「在线更新」是长期自举钩子：装过一次 v5 之后，
+# 后续所有更新都可以在 KUAL 里点一下完成，不再需要 SSH 或电脑。
 MENU="$EXT/menu.json"
 [ -f "$MENU" ] && cp "$MENU" "$MENU.bak_wifi" 2>/dev/null
 cat > "$MENU.new" <<'JSON'
@@ -189,6 +197,11 @@ cat > "$MENU.new" <<'JSON'
 				{
 					"name": "关闭仪表盘",
 					"action": "bin/dash_off.sh",
+					"exitmenu": true
+				},
+				{
+					"name": "在线更新(WiFi)",
+					"action": "bin/dash_update.sh",
 					"exitmenu": true
 				}
 			]

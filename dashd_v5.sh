@@ -407,9 +407,21 @@ power_monitor() {
 # ---------- 看门狗：主进程没了就重新拉起 ----------
 watchdog() {
     local mainpid="$1"
+    local newpid
     while :; do
         sleep 45
+        # 主动停止（电源键/短按/KUAL 关闭/菜单重启）时绝不能再拉起，
+        # 否则「关闭仪表盘」会被看门狗无声复活。
+        [ -f "$STOP_FLAG" ] && exit 0
+        [ -f /mnt/us/dash/stop ] && exit 0
         if ! alive "$mainpid"; then
+            # 菜单重启实例时，新实例会比本看门狗的 45 秒轮询更早起来。
+            # 这时若再拉一个，就会有两个守护进程抢同一块屏幕。
+            newpid=$(cat "$PIDF" 2>/dev/null)
+            if [ -n "$newpid" ] && [ "$newpid" != "$mainpid" ] && [ -d "/proc/$newpid" ]; then
+                log "看门狗: 已有新实例 $newpid，退出，不重复拉起"
+                exit 0
+            fi
             log "看门狗: 主进程 $mainpid 已消失，重新拉起"
             sleep 2
             # 自引用必须指向 v5 自己。原来指向 /mnt/us/dashd.sh（根目录旧版），
