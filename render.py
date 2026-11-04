@@ -714,7 +714,7 @@ def render(data, out, at=None):
         draw_icon(d, dk, start + 22, 660, 22)
         d.text((start + 54, 660), txt, font=f_one, fill=BLACK, anchor="lm")
 
-    # 底部状态栏：左=更新时间，右=电量徽标（数字由设备端 eips 叠加）
+    # 底部状态栏：左=更新时间，右=电量文案（整串由云端烧入，左右同为 FOOTER_FONT_SIZE）
     draw_footer(d, M, RIGHT, at)
 
     img.save(out, "PNG")
@@ -733,7 +733,12 @@ def render(data, out, at=None):
 #   3) 收益很低：电量每小时才变一次，不值得为它承担错位风险。
 # 若以后确实需要实时数字，下面已记好实测标定值，重新启用设备端叠加即可。
 BATT_TEXT = "电量：94"   # 直接烧进画面的电量文案
-BATT_FONT_SIZE = 21
+
+# 底部状态栏统一字号：左侧「更新 时间」与右侧「电量：94」必须一样大。
+# 之前电量 21px、更新时间竖屏 15px / 横屏 16px，右侧明显大出一截。
+# 现在两边共用同一个常量，跨版式也统一，避免以后再各自分叉。
+FOOTER_FONT_SIZE = 16
+BATT_FONT_SIZE = FOOTER_FONT_SIZE   # 保留别名，兼容既有引用
 
 # ---- eips 字符格几何（dash_probe3 v3 实测标定，留档备用）----
 #   命令语法: eips [col] [row] "text"
@@ -749,9 +754,9 @@ EIPS_CELL_H = 38.7
 def draw_footer(d, left_x, right_x, at):
     """画底部状态栏：左侧「更新 时间」，右侧「电量：94」。竖屏与横屏共用。"""
     d.text((left_x + 2, BATT_BASE_Y), "更新 " + at.strftime("%m-%d %H:%M"),
-           font=font(FONT_REG, 15), fill=BLACK, anchor="ls")
+           font=font(FONT_REG, FOOTER_FONT_SIZE), fill=BLACK, anchor="ls")
     d.text((right_x, BATT_BASE_Y), BATT_TEXT,
-           font=font(FONT_REG, BATT_FONT_SIZE), fill=BLACK, anchor="rs")
+           font=font(FONT_REG, FOOTER_FONT_SIZE), fill=BLACK, anchor="rs")
 
 
 # ---------------------------------------------------------------------------
@@ -921,10 +926,13 @@ def render_landscape(data, out, at=None):
     # 这样用户横持时它正好在正下方（而不是跟着跑到侧边去）。
     d.line([(M, 552), (RIGHT, 552)], fill=LGRAY, width=2)
     d.text((M + 2, 560), "更新 " + at.strftime("%m-%d %H:%M"),
-           font=font(FONT_REG, 16), fill=BLACK)
-    # 电量：整串由云端烧入（设备端不再做 eips 叠加）
-    d.text((RIGHT, 560), BATT_TEXT, font=font(FONT_REG, BATT_FONT_SIZE),
-           fill=BLACK, anchor="rs")
+           font=font(FONT_REG, FOOTER_FONT_SIZE), fill=BLACK)
+    # 电量：整串由云端烧入（设备端不再做 eips 叠加）。
+    # 锚点用 "ra"（右对齐 + 顶对齐）与左侧默认的 "la" 保持一致：
+    # 原来用 "rs"（右对齐 + 基线对齐），同样 y=560 却比左侧低约一个字高，
+    # 字号统一后这个错位反而更明显。
+    d.text((RIGHT, 560), BATT_TEXT, font=font(FONT_REG, FOOTER_FONT_SIZE),
+           fill=BLACK, anchor="ra")
 
     # 旋转成 600x800。
     # 用 ROTATE_90（逆时针 90 度）：已用 ASCII 标记实测验证过——
