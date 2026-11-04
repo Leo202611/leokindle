@@ -42,11 +42,25 @@ if [ ! -d "$LINK_DIR" ]; then
     exit 2
 fi
 
+# linkss 源码（bin/shuffless）确认的命名规则：
+#   - 它会把 screensavers/ 里所有 PNG 自动重命名为 bg_ss + 两位序号 + .png
+#   - 硬性要求：必须是**小写 .png**，其它文件会被丢进 discarded/
+#   - 安装时自带示例图 00_you_can_delete_me*.png，若不清理会与我们的图轮播交替
+# 所以这里把目录里其它 .png 全部移到备份目录，只留我们这一张，保证休眠时
+# 100% 显示指定画面（单文件时序号必为 00）。
+BK_DIR="/mnt/us/linkss/backup_custom"
+mkdir -p "$BK_DIR" 2>/dev/null
+for f in "$LINK_DIR"/*.png; do
+    [ -f "$f" ] || continue
+    case "$(basename "$f")" in bg_ss00.png) continue ;; esac
+    mv "$f" "$BK_DIR/" 2>/dev/null && say "移走示例/旧图: $(basename "$f")"
+done
+
 # 备份已有，再覆盖（保留 .bak 便于回退）
-[ -f "$LINK_DIR/bg_ss00.png" ] && cp "$LINK_DIR/bg_ss00.png" "$LINK_DIR/bg_ss00.png.bak" 2>/dev/null
+[ -f "$LINK_DIR/bg_ss00.png" ] && cp "$LINK_DIR/bg_ss00.png" "$BK_DIR/bg_ss00.png.bak" 2>/dev/null
 cp "$SRC" "$LINK_DIR/bg_ss00.png"
-say "已写入 $LINK_DIR/bg_ss00.png"
+say "已写入 $LINK_DIR/bg_ss00.png（600x800 8位灰度，目录内仅此一张）"
 
 # 立即在屏上绘制预览（即便不休眠也能看到；休眠时 linkss 也会读取此图）
 eips -f -g "$LINK_DIR/bg_ss00.png" >> "$LOG" 2>&1
-say "完成：休眠即显示此图。需多张轮播，按 bg_ssNN.png 规则再放几张即可。"
+say "完成：休眠即显示此图。若之后放了多张，linkss 会在 framework 重启时自动编号轮播。"
