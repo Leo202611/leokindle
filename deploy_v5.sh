@@ -73,6 +73,36 @@ ENTRIES="dash_on_v5.sh dash_on_land.sh dash_on_port.sh dash_off.sh dash_update.s
 mkdir -p "$DST" "$EXT/bin" 2>/dev/null
 : > "$LOG" 2>/dev/null
 say "===== v5 纯 WiFi 安装 ====="
+
+# ---- 0. 一次性紧急止损（2026-11-05 07:44）----
+# 装了带 sysfs wakealarm 的版本后设备不定时自我重启；频繁异常重启还可能让
+# /mnt/us 的 FAT 目录项回滚，KUAL 菜单被打回 19:07 之前的原始 6 项
+# （那套里连「在线更新(WiFi)」都没有，更没有「停用定时更新」）。
+# 所以：只要用户还能点到任意版本菜单里的「在线更新(WiFi)」，本次安装就
+# 先把定时服务彻底停掉，再重写 9 项菜单，让设备先稳定下来。
+# 用 ss_emergency_done 保证只执行一次：用户之后手动点第 1 项启用时，
+# ss_enable.sh 会删掉 ss_no_auto，后续在线更新即恢复正常行为。
+if [ ! -f "$DST/ss_emergency_done" ]; then
+    say "!! 一次性紧急止损：停用 dashss 定时服务"
+    stop dashss >/dev/null 2>&1
+    pkill -f 'ss_scheduler.sh' 2>/dev/null
+    pkill -f 'ss_update_once.sh' 2>/dev/null
+    # 顺手清掉常亮守护残留：否则 dash_update.sh 收尾看到旧 pid 可能又
+    # 拉起 keep_awake，设备不休眠、白白耗电。
+    pkill -f 'dashd.*\.sh' 2>/dev/null
+    rm -f /var/local/dashd.pid /var/local/dash_stop 2>/dev/null
+    mntroot rw >/dev/null 2>&1
+    rm -f /etc/upstart/dashss.conf 2>/dev/null
+    mntroot ro >/dev/null 2>&1
+    echo 0 > /sys/class/rtc/rtc0/wakealarm 2>/dev/null
+    rm -f "$DST/ss_enabled" /tmp/dashss.conf 2>/dev/null
+    rm -rf /tmp/dashss 2>/dev/null
+    echo "stopped $(date)" > "$DST/ss_no_auto" 2>/dev/null
+    echo "done $(date)" > "$DST/ss_emergency_done" 2>/dev/null
+    say "!! 已停服务 / 删开机自启 / 清 RTC 闹钟；本次不会自动启用"
+else
+    say "紧急止损已执行过，按正常流程安装"
+fi
 say "时刻: $(date)"
 say "源: http://$SRV  (回退: GitHub main/dash)"
 
