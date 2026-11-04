@@ -789,16 +789,21 @@ def draw_footer(d, left_x, right_x, at):
 
 
 def draw_multi_day(d, daily, at, x0, y0, w, h, days=5):
-    """横屏用的多日温度带：每天一列，柱状表示最高/最低温，柱顶标最高温。"""
-    d.text((x0, y0 - 8), "未来 %d 天" % days, font=font(FONT_BOLD, 20), fill=BLACK)
-    # 日期标签行独占一行；柱体从它下面开始，柱顶再留 22px 给最高温标注，
-    # 否则标签会和最高温数字压在一起。
-    label_y = y0 + 26
-    top = y0 + 44
-    bot = y0 + h - 30
-    colw = w / float(days)
+    """横屏「未来 N 天」温度趋势：与竖屏同一套「点 + 线」语言。
 
-    # 收集数据
+    2026-11-04 用户要求：横屏不要一根根矩形柱，改成竖屏那样点线相连的气温
+    趋势。这里画两条折线表达未来几天的温度变化：
+      * 上方折线 = 每日最高温，3px 实线 + 实心圆节点，点上方标温度；
+      * 下方折线 = 每日最低温，3px 实线 + 空心圆节点，点下方标温度；
+      * 每天一条浅灰细竖线连接上下两点，表示当日温度区间（替代原来的柱子）。
+    顶部保留「今天/明天/星期X」+ 天气小图标。
+    e-ink 灰度层次少，不用颜色区分两条线，改用实心/空心节点区分。
+    """
+    d.text((x0, y0 - 2), "未来 %d 天" % days, font=font(FONT_BOLD, 20), fill=BLACK)
+    d.text((x0 + 130, y0 + 2), "上线 最高温   下线 最低温",
+           font=font(FONT_REG, 15), fill=GRAY)
+
+    # 收集数据；off 是真实日偏移，缺失的天留空但列位置不动，避免版式跳动
     items = []
     for off in range(days):
         dd = at.date() + datetime.timedelta(days=off)
@@ -811,42 +816,72 @@ def draw_multi_day(d, daily, at, x0, y0, w, h, days=5):
             code = daily["weather_code"][i]
         except Exception:
             continue
-        items.append((dd, hi, lo, code))
+        items.append((off, dd, hi, lo, code))
     if not items:
+        d.text((x0, y0 + 60), "（多日预报暂不可用）", font=font(FONT_REG, 19), fill=LGRAY)
         return
 
-    hi_all = max(t[1] for t in items)
-    lo_all = min(t[2] for t in items)
-    span = max(1.0, hi_all - lo_all)
-    # 柱区上方留 22px 给最高温标注
-    bar_top = top + 22
-    bar_bot = bot
+    hi_all = max(t[2] for t in items)
+    lo_all = min(t[3] for t in items)
+    # 温差太小会把两条线压成一条，人为撑开到至少 4 度（与竖屏 draw_curve 一致）
+    if hi_all - lo_all < 4:
+        mid = (hi_all + lo_all) / 2.0
+        lo_all, hi_all = mid - 2.0, mid + 2.0
+    span = max(0.5, hi_all - lo_all)
 
-    for k, (dd, hi, lo, code) in enumerate(items):
-        cx = x0 + int(colw * (k + 0.5))
-        desc, kind = WMO.get(code, ("未知", "cloud"))
-        # 日期标签放最上方（在最高温标注之上），避免与柱体/最低温重叠
-        if k == 0:
-            label = "今天"
-        elif k == 1:
-            label = "明天"
-        else:
-            label = WEEK[dd.weekday()]
-        d.text((cx, label_y), label, font=font(FONT_REG, 17), fill=GRAY, anchor="mm")
-        # 柱：最高到最低
-        y_hi = int(bar_bot - (hi - lo_all) / span * (bar_bot - bar_top))
-        d.rectangle([cx - 20, y_hi, cx + 20, bar_bot], fill=WHITE, outline=BLACK, width=2)
-        # 上下端小横杠
-        d.line([(cx - 24, y_hi), (cx + 24, y_hi)], fill=BLACK, width=3)
-        d.line([(cx - 24, bar_bot), (cx + 24, bar_bot)], fill=BLACK, width=3)
-        # 最高温标注：贴在柱顶横杠上方
-        d.text((cx, y_hi - 6), "%d°" % round(hi), font=font(FONT_BOLD, 17),
-               fill=BLACK, anchor="ms")
-        # 最低温标注：贴在柱底横杠下方
-        d.text((cx, bar_bot + 5), "%d°" % round(lo), font=font(FONT_REG, 15),
-               fill=GRAY, anchor="ma")
-        # 天气图标：放在柱内中段
-        draw_icon(d, kind, cx, (y_hi + bar_bot) / 2, 13)
+    colw = w / float(days)
+    label_y = y0 + 34       # 日期 + 天气图标行
+    top = y0 + 76           # 折线区上沿（给最高温标注留 22px）
+    bot = y0 + h - 38       # 折线区下沿（给最低温标注留空间）
+
+    def px(off):
+        return x0 + int(round(colw * (off + 0.5)))
+
+    def py(v):
+        return int(round(bot - (v - lo_all) / span * (bot - top)))
+
+    # 1) 顶部：天气图标 + 日期标签（同一行，整组居中于该列）
+    f_lab = font(FONT_REG, 17)
+    for off, dd, hi, lo, code in items:
+        cx = px(off)
+        label = "今天" if off == 0 else ("明天" if off == 1 else WEEK[dd.weekday()])
+        _, kind = WMO.get(code, ("未知", "cloud"))
+        tw = d.textlength(label, font=f_lab)
+        iw, gap = 22, 6
+        sx = cx - (iw + gap + tw) / 2.0
+        draw_icon(d, kind, sx + iw / 2.0, label_y, 11)
+        d.text((sx + iw + gap, label_y), label, font=f_lab, fill=GRAY, anchor="lm")
+
+    # 2) 当日温度区间：浅灰细竖线（先画，让黑色折线压在上面）
+    for off, dd, hi, lo, code in items:
+        cx = px(off)
+        d.line([(cx, py(hi)), (cx, py(lo))], fill=LGRAY, width=1)
+
+    # 3) 两条折线：3px 粗线与竖屏 draw_curve 完全一致
+    for idx, key in ((2, "hi"), (3, "lo")):
+        pts = [(px(t[0]), py(t[idx])) for t in items]
+        for k in range(len(pts) - 1):
+            d.line([pts[k], pts[k + 1]], fill=BLACK, width=3)
+
+    # 4) 节点：最高温实心、最低温空心（白心黑边，不依赖灰度区分）
+    for off, dd, hi, lo, code in items:
+        x, yh, yl = px(off), py(hi), py(lo)
+        d.ellipse([x - 4, yh - 4, x + 4, yh + 4], fill=BLACK)
+        d.ellipse([x - 4, yl - 4, x + 4, yl + 4], fill=WHITE, outline=BLACK, width=2)
+
+    # 5) 温度标注：白底衬保证压在线条附近也清晰（竖屏同一做法）
+    f_hi = font(FONT_BOLD, 16)
+    f_lo = font(FONT_REG, 15)
+    for off, dd, hi, lo, code in items:
+        cx = px(off)
+        for val, y, f, col, above in ((hi, py(hi), f_hi, BLACK, True),
+                                     (lo, py(lo), f_lo, GRAY, False)):
+            t = "%d°" % round(val)
+            tw = d.textlength(t, font=f)
+            tx = max(x0, min(cx - tw / 2.0, x0 + w - tw))
+            ty = y - 22 if above else y + 6
+            d.rectangle([tx - 2, ty - 2, tx + tw + 2, ty + 19], fill=WHITE)
+            d.text((tx, ty), t, font=f, fill=col)
 
 
 def render_landscape(data, out, at=None):
