@@ -81,15 +81,25 @@ BATT_FOLLOW_H=""           # 已做过跟进取图的小时，防止一小时内
 #   3) api.m.taobao.com 是 HTTP 明文，新网络（尤其有门户认证的）常拿不到；
 #   4) GUI 冻结若未生效，周期性重绘会覆盖仪表盘。
 # 对策分别是：WiFi 快速失败并记状态、用云端 index.txt 定小时、
-# 取图失败回退云端最新一张、周期保画面补绘、诊断状态经 ntfy 回传。
+# 取图失败回退云端最新一张、保画面补绘（仅 GUI 冻结失败兜底）、诊断状态经 ntfy 回传。
 GH_INDEX="https://api.github.com/repos/Leo202611/leokindle/contents/index.txt?ref=dash"
 IDX_CACHE=/tmp/dash_index_net
 IDX_TS=0
 DIAG_TOPIC="k8dash_diag_7f3c9e2a"
 DIAG_URL="https://ntfy.sh/$DIAG_TOPIC"
 WIFI_IP=""
-REDRAW_SECS=90             # 保画面补绘间隔（秒）
+REDRAW_SECS=90             # 保画面补绘间隔（秒，仅 GUI 冻结失败时兜底用）
 LAST_REDRAW=0
+
+# ---- 更新频率：每天固定几个点，而不是每小时 ----
+# 仪表盘内容（天气/日历/日期）在一小时内几乎不变，每小时整屏刷新既浪费
+# 也增加 WiFi 唤醒次数。改为「白名单小时」：只有当前小时在 UPDATE_HOURS
+# 里、且本小时尚未刷新过，才唤醒 WiFi 取图。其余时间守护进程只轻量 sleep，
+# 不碰 WiFi、不重绘屏幕（e-ink 双稳态，画面保持零耗电）。
+# 云端本来就是逐小时预渲染整套图，所以在固定点取到的仍是当时小时的真实天气，
+# 只是两次更新之间画面会滞留几小时旧数据（可接受）。
+# 想恢复每小时，把 UPDATE_HOURS 设为 "0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23"。
+UPDATE_HOURS="7 12 18 22"
 
 log() { echo "[$(date +"%m-%d %H:%M:%S")] $*" >> "$LOG"; }
 
@@ -681,16 +691,18 @@ while :; do
     fi
 
     keep_awake
+    hr=$(date +%H 2>/dev/null); hr=$(( 10#$hr ))   # 当前小时，去前导零防八进制
     hd=$(date +%Y%m%d_%H)
 
-    # ---- 保画面补绘：根治「停留几秒画面就消失」----
-    # 这个现象就是 GUI 周期性重绘把仪表盘盖掉了。换 WiFi / 重启后，
-    # GUI 冻结未必生效（服务名或状态可能变了），光靠冻结不可靠。
-    # 不管冻结成没成，都周期性把缓存图重画一遍：即使被覆盖，
-    # REDRAW_SECS 秒内一定刷回来。同一张图重画，像素不变，只是闪一下。
-    # 放一个 /mnt/us/dash/no_redraw 文件即可关闭这层兜底。
+    # ---- 保画面补绘：仅当 GUI 冻结失败时才兜底 ----
+    # 冻结成功（FROZE_FLAG 存在）时系统不会覆盖我们，无需周期性重绘；
+    # 只在冻结失败、退化到 stop/start GUI 时才每 REDRAW_SECS 秒补绘一次。
+    # 这正是之前每小时 40 次整屏刷新（最大耗电项）的源头，正常情况应完全不跑。
+    # 若冻结成功但仍出现「几秒消失」，放一个 /mnt/us/dash/force_redraw 文件
+    # 即可强制开启这层兜底（no_redraw 优先级更高，可彻底关闭）。
     tnow=$(date +%s 2>/dev/null || echo 0)
-    if [ ! -f /mnt/us/dash/no_redraw ] && [ -s "$IMG" ] && \
+    if { [ ! -f "$FROZE_FLAG" ] || [ -f /mnt/us/dash/force_redraw ]; } && \
+       [ ! -f /mnt/us/dash/no_redraw ] && [ -s "$IMG" ] && \
        [ $(( tnow - LAST_REDRAW )) -ge "$REDRAW_SECS" ] 2>/dev/null; then
         eips -f -g "$IMG" >> "$LOG" 2>&1
         LAST_REDRAW=$tnow
@@ -717,7 +729,19 @@ while :; do
         fi
     fi
 
-    [ "$hd" = "$LAST" ] && continue
+    # ---- 是否在本小时取图：白名单小时 + 本小时尚未更新 ----
+    # 内容（天气/日历/日期）一小时不变，没必要每小时唤醒 WiFi 整屏刷新。
+    # 只在 UPDATE_HOURS 列出的小时、且本小时还没更新过时取图；
+    # 首轮（LAST 为空）必定更新一次，保证开机即有最新画面。
+    # 非更新点：不碰 WiFi、不重绘，e-ink 双稳态保持画面零耗电。
+    do_update=0
+    case " $UPDATE_HOURS " in *" $hr "*) [ "$hd" != "$LAST" ] && do_update=1 ;; esac
+    [ -z "$LAST" ] && do_update=1
+    if [ "$do_update" != "1" ]; then
+        [ "$hd" != "$LAST_SKIP" ] && { LAST_SKIP=$hd; log "非更新点($hr 时)，跳过取图"; }
+        continue
+    fi
+
     wifi_on
     sync_clock >/dev/null 2>&1
     # 电量上报（默认停用；恢复后这一报最关键，CI :17 读到的就是它）。
