@@ -40,14 +40,18 @@ for f in ss_config.sh ss_update_once.sh ss_scheduler.sh; do
     fi
 done
 
-# 3) 先立刻刷新一次，用户按电源键就能看到新图（修正中午 12:00 静态图）
-#    quick 模式（由 deploy_v5.sh 在线更新调用）：跳过同步刷图，避免 KUAL 动作
-#    被 60 秒下载拖住；调度器启动时的「启动补刷」会自己做这一次更新。
-if [ "$1" = "quick" ]; then
-    say "quick 模式：跳过同步刷图，交由调度器启动补刷"
-elif [ -f "$RUN/ss_update_once.sh" ]; then
-    sh "$RUN/ss_update_once.sh" >> "$LOG" 2>&1
-    say "已做一次立即更新"
+# 3) 不在 KUAL 动作里同步下载图片。
+#    在线更新链路里本脚本会被连续调用两次（deploy_v5.sh 自动启用 +
+#    设备 1a18728 版 dash_update.sh 在 ss_enabled 存在时的重复启用），
+#    同步刷图会把菜单动作拖到 60 秒并多唤醒取一次图。
+#    统一交给调度器启动时的「启动补刷」（ss_last 为空或超过 20 分钟即执行），
+#    它在 upstart 服务里后台跑，不会卡住 KUAL。
+#    需要立刻刷新请用菜单第 2 项「立即更新待机画面(WiFi)」。
+#    quick 参数保留只为兼容旧调用，行为一致。
+if [ -f "$RUN/ss_scheduler.sh" ]; then
+    say "刷图交由调度器启动补刷；菜单第 2 项可手动立即刷新"
+else
+    say "WARN 缺 ss_scheduler.sh，启动补刷不可用"
 fi
 
 # 4) 注册 upstart 自启（rootfs 默认只读，需 mntroot rw）
