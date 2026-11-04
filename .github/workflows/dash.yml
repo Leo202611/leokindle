@@ -40,12 +40,17 @@ jobs:
       - name: 安装依赖
         run: pip install -q -r requirements.txt
 
-      # A 方案（真实电量云端中转）：设备每小时把 lipc 实测电量 POST 到
-      # ntfy.sh 公共 topic，这里读回 2 小时内最新一条，写进 GITHUB_ENV。
-      # 读不到 / 过期 / JSON 非法时 DASH_BATT 为空，画面回落「电量：--」，
-      # 绝不伪造数字。诊断信息由 batt_relay.py 写 stderr，不会污染 env。
-      - name: 读取设备上报的真实电量（云端中转）
-        run: python3 batt_relay.py >> "$GITHUB_ENV"
+      # 【2026-11-04 12:37 起停用】用户要求停掉设备每小时上报以省电，
+      # 画面右下电量位也已留白。设备端 BATT_REPORT=0 不再 POST，
+      # 下面这一步读不到有效数据、纯属多余，暂时注释掉。
+      # 恢复时三处一起开：
+      #   1) dashd_v5.sh 的 BATT_REPORT=1（重新上报 + 恢复 :35 跟进取图）
+      #   2) 取消下面两行注释（CI 读回并注入 GITHUB_ENV）
+      #   3) 渲染命令加 --show-batt（或设 DASH_SHOW_BATT=1）
+      # 原逻辑：读 ntfy 2 小时内最新一条；读不到/过期/JSON 非法时
+      # DASH_BATT 为空，绝不伪造数字。诊断信息由 batt_relay.py 写 stderr。
+      # - name: 读取设备上报的真实电量（云端中转）
+      #   run: python3 batt_relay.py >> "$GITHUB_ENV"
 
       - name: 批量渲染逐小时图（竖屏 + 横屏两套）
         run: |

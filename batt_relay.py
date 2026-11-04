@@ -2,7 +2,12 @@
 # -*- coding: utf-8 -*-
 """Kindle 仪表盘 · 真实电量云端中转读取端（GitHub Actions 调用）。
 
-链路（用户选定的 A 方案）：
+【2026-11-04 12:37 起停用】用户要求停掉设备每小时上报以省电，
+且画面右下电量位已留白。设备端 BATT_REPORT=0 不再 POST，
+CI workflow 里调用本脚本的步骤也已注释掉。
+本文件保留供以后恢复，当前不会被 CI 执行。
+
+链路（用户选定的 A 方案，历史留档）：
     Kindle 每小时读 lipc battLevel/isCharging
       -> POST 到 ntfy.sh 公共 topic
       -> CI 每小时跑本脚本读回最新一条

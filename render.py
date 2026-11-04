@@ -728,8 +728,9 @@ def render(data, out, at=None):
 #
 # 2026-11-04 中午用户决定：**该位置暂时留白**。
 # 原因：电量每小时才随取图更新一次数值，看着反而别扭，不如不展示。
-# 处理方式是「默认不绘制」而不是删代码 —— 上报链路与 batt_text() 都保留，
-# 以后想恢复只要 --show-batt / DASH_SHOW_BATT=1，不必重写一遍。
+# 处理方式是「默认不绘制」而不是删代码 —— batt_text() 与云端链路都保留，
+# 但设备端 12:37 起已停止上报（省电，BATT_REPORT=0），CI 读取步骤也停用。
+# 以后想恢复要三处一起开：--show-batt、BATT_REPORT=1、CI 电量读取步骤。
 #
 # 设备端读电量接口（Probe5 实测确认）留档：
 #   lipc-get-prop com.lab126.powerd battLevel   -> 0..100
@@ -1022,7 +1023,7 @@ if __name__ == "__main__":
                 f.write("# 状态：显示，当前文案：%s（由 DASH_BATT / --batt 注入）\n" % batt_text())
             else:
                 f.write("# 状态：留白（2026-11-04 用户决定暂不展示每小时变化的电量数值）。\n")
-                f.write("#       电量读取/上报/中转链路仍在运行，恢复显示用 --show-batt。\n")
+                f.write("#       设备端电量上报已停用（省电）；恢复需 --show-batt + BATT_REPORT=1。\n")
             f.write("# 设备端读电量：lipc-get-prop com.lab126.powerd battLevel / isCharging\n")
             f.write("#\n")
             f.write("# 留档：eips 字符格实测标定值（dash_probe3 v3）\n")
