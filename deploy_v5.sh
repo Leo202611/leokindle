@@ -31,37 +31,66 @@ say "源: http://$SRV"
 mkdir -p "$DST" "$EXT/bin" 2>/dev/null
 
 # ---- 1. 拉脚本 ----
-for f in dashd_v5.sh dash_on_v5.sh; do
+# 优先电脑 HTTP；失败则从 GitHub main 分支取。
+pull_sh() {
+    f="$1"
     if curl -sL -m 30 -o "$DST/$f.tmp" "http://$SRV/$f"; then
         sz=$(wc -c < "$DST/$f.tmp" 2>/dev/null)
         if [ "${sz:-0}" -gt 1000 ] && head -c 60 "$DST/$f.tmp" | grep -q '#!/bin/sh'; then
-            mv "$DST/$f.tmp" "$DST/$f"
-            chmod 755 "$DST/$f"
-            say "OK  $f ($sz bytes)"
-        else
-            say "FAIL $f 内容不合法 (${sz:-0} bytes)"
-            rm -f "$DST/$f.tmp"
+            mv "$DST/$f.tmp" "$DST/$f"; chmod 755 "$DST/$f"
+            say "OK  $f (来自电脑, $sz bytes)"; return 0
         fi
-    else
-        say "FAIL $f 下载失败"
+        rm -f "$DST/$f.tmp"
     fi
-done
-
-# ---- 2. 拉新排版图（竖屏 cur_p.png / 横屏 cur_l.png）----
-for f in cur_p.png cur_l.png; do
-    if curl -sL -m 40 -o "$DST/$f.tmp" "http://$SRV/$f"; then
+    if curl -sL -m 30 -H "Accept: application/vnd.github.raw" \
+         -o "$DST/$f.tmp" "https://api.github.com/repos/Leo202611/leokindle/contents/$f?ref=main"; then
         sz=$(wc -c < "$DST/$f.tmp" 2>/dev/null)
-        if [ "${sz:-0}" -gt 10000 ] && head -c 8 "$DST/$f.tmp" | od -An -tx1 | grep -q '89 50 4e 47'; then
-            mv "$DST/$f.tmp" "$DST/$f"
-            say "OK  $f ($sz bytes)"
-        else
-            say "FAIL $f 不是有效 PNG (${sz:-0} bytes)"
-            rm -f "$DST/$f.tmp"
+        if [ "${sz:-0}" -gt 1000 ] && head -c 60 "$DST/$f.tmp" | grep -q '#!/bin/sh'; then
+            mv "$DST/$f.tmp" "$DST/$f"; chmod 755 "$DST/$f"
+            say "OK  $f (来自 GitHub, $sz bytes)"; return 0
         fi
-    else
-        say "FAIL $f 下载失败"
     fi
-done
+    rm -f "$DST/$f.tmp"
+    say "FAIL $f 两个来源都失败"
+    return 1
+}
+
+pull_sh dashd_v5.sh
+pull_sh dash_on_v5.sh
+
+# ---- 2. 拉新排版图 ----
+# 优先从电脑 HTTP 服务拿（那是刚渲染好的当小时图）；
+# 拿不到就退回 GitHub dash 分支按小时取。
+# dash 分支里是 <YYYYMMDD_HH>.png（竖屏）和 <YYYYMMDD_HH>_land.png（横屏）。
+pull_png() {
+    dst="$1"; land="$2"
+    # 先试电脑
+    if curl -sL -m 40 -o "$dst.tmp" "http://$SRV/$dst"; then
+        sz=$(wc -c < "$dst.tmp" 2>/dev/null)
+        if [ "${sz:-0}" -gt 10000 ]; then
+            mv "$dst.tmp" "$dst"; say "OK  $dst (来自电脑, $sz bytes)"; return 0
+        fi
+        rm -f "$dst.tmp"
+    fi
+    # 退回 GitHub：按本机当前小时取
+    h=$(date +%Y%m%d_%H)
+    [ -n "$land" ] && h="${h}_land"
+    for br in dash main; do
+        if curl -sL -m 40 -H "Accept: application/vnd.github.raw" \
+             -o "$dst.tmp" "https://api.github.com/repos/Leo202611/leokindle/contents/$h.png?ref=$br"; then
+            sz=$(wc -c < "$dst.tmp" 2>/dev/null)
+            if [ "${sz:-0}" -gt 10000 ] && head -c 8 "$dst.tmp" | od -An -tx1 | grep -q '89 50 4e 47'; then
+                mv "$dst.tmp" "$dst"; say "OK  $dst (来自 GitHub/$br, $sz bytes)"; return 0
+            fi
+        fi
+        rm -f "$dst.tmp"
+    done
+    say "FAIL $dst 两个来源都失败"
+    return 1
+}
+
+pull_png cur_p.png ""
+pull_png cur_l.png "land"
 
 # ---- 3. 装 KUAL 入口 ----
 if [ -f "$DST/dash_on_v5.sh" ]; then
