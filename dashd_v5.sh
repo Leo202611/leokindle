@@ -63,6 +63,24 @@ BATT_LAST=/mnt/us/dash/last_batt.json
 BATT_FOLLOW_MIN=35
 BATT_FOLLOW_H=""           # 已做过跟进取图的小时，防止一小时内重复取图
 
+# ---------- 换 WiFi / 离线 鲁棒性 ----------
+# 2026-11-04 中午实测：换无线网并重启 Kindle 后，画面停在 11 点缓存图
+# 且几秒就被 GUI 盖掉。云端 12 点图其实早已就绪，问题全在设备侧：
+#   1) Kindle 不会自动切换新 SSID，cmState=1 不代表拿到 IP / 能出外网；
+#   2) 重启后设备时钟可能错乱，按本地 date 拼出的小时文件名在 dash 分支不存在；
+#   3) api.m.taobao.com 是 HTTP 明文，新网络（尤其有门户认证的）常拿不到；
+#   4) GUI 冻结若未生效，周期性重绘会覆盖仪表盘。
+# 对策分别是：WiFi 快速失败并记状态、用云端 index.txt 定小时、
+# 取图失败回退云端最新一张、周期保画面补绘、诊断状态经 ntfy 回传。
+GH_INDEX="https://api.github.com/repos/Leo202611/leokindle/contents/index.txt?ref=dash"
+IDX_CACHE=/tmp/dash_index_net
+IDX_TS=0
+DIAG_TOPIC="k8dash_diag_7f3c9e2a"
+DIAG_URL="https://ntfy.sh/$DIAG_TOPIC"
+WIFI_IP=""
+REDRAW_SECS=90             # 保画面补绘间隔（秒）
+LAST_REDRAW=0
+
 log() { echo "[$(date +"%m-%d %H:%M:%S")] $*" >> "$LOG"; }
 
 # 读实测电量并上报。上报失败绝不能影响取图与显示：所有 curl 带超时，
@@ -96,6 +114,23 @@ report_batt() {
     return 1
 }
 
+# 把设备侧关键状态回传到 ntfy 诊断 topic。
+# 设备没有入站 SSH/HTTP，Mac 无法主动读日志；用同一条出站通道把状态推出来，
+# 在电脑上 curl 一下 topic 就能看到「WiFi 有没有连上、取图成没成功、GUI 冻结没」。
+# 上报失败同样只记日志，绝不影响显示。
+report_diag() {
+    ST=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)
+    IP=$(lipc-get-prop com.lab126.wifid ipv4 2>/dev/null)
+    SZ=$(wc -c < "$IMG" 2>/dev/null)
+    if [ -f "$FROZE_FLAG" ]; then FZ=1; else FZ=0; fi
+    PAYLOAD="{\"ev\":\"$1\",\"t\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"wifi\":\"${ST:-?}\",\"ip\":\"${IP:-}\",\"orient\":\"$ORIENT\",\"img\":\"$(basename "$IMG")\",\"bytes\":${SZ:-0},\"froze\":$FZ,\"last\":\"${LAST:-none}\"}"
+    if curl -s -m 12 -o /dev/null -X POST -H "Content-Type: application/json" \
+            --data-binary "$PAYLOAD" "$DIAG_URL" 2>>"$LOG" || \
+       curl -sk -m 12 -o /dev/null -X POST -H "Content-Type: application/json" \
+            --data-binary "$PAYLOAD" "$DIAG_URL" 2>>"$LOG"; then :; fi
+    log "诊断 $PAYLOAD"
+}
+
 # 当前版式对应的图片路径。ORIENT 变化时必须重新调用，
 # 否则横竖屏的取图/绘图会写到同一个文件上。
 set_img() {
@@ -115,27 +150,31 @@ alive() {
 # 原来只等 24 秒就放弃，是"22 点仍显示 21 点"的直接原因。
 wifi_on() {
     lipc-set-prop com.lab126.wifid cmState 1 >/dev/null 2>&1
+    # 换 WiFi 后最常见的情况是「cmState=1 但根本没关联上新 SSID」。
+    # 原来最多等 90+50=140 秒还无条件 return 0，用户只看到旧缓存图，
+    # 完全不知道是网络没连上。现在缩短到 40+30 秒并如实返回状态。
     i=0
-    while [ $i -lt 45 ]; do
+    while [ $i -lt 20 ]; do
         sleep 2
         st=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)
-        if [ "$st" = "1" ]; then
-            break
-        fi
+        [ "$st" = "1" ] && break
         i=$((i+1))
     done
-    # 等 DHCP 拿到 IP
     j=0
-    while [ $j -lt 25 ]; do
+    while [ $j -lt 15 ]; do
         ip=$(lipc-get-prop com.lab126.wifid ipv4 2>/dev/null)
         case "$ip" in
-            [0-9]*.[0-9]*.[0-9]*.[0-9]*) sleep 2; return 0 ;;
+            [0-9]*.[0-9]*.[0-9]*.[0-9]*)
+                WIFI_IP="$ip"
+                log "WiFi 就绪: cmState=${st:-?} ip=$ip"
+                sleep 1; return 0 ;;
         esac
         sleep 2
         j=$((j+1))
     done
-    log "警告: WiFi 已开但 50 秒内未拿到 DHCP 地址"
-    return 0
+    WIFI_IP=""
+    log "警告: WiFi 未就绪(cmState=${st:-?}, 无 DHCP 地址)；本次离线，保持缓存画面"
+    return 1
 }
 
 wifi_off() {
@@ -160,7 +199,30 @@ sync_clock() {
 NET_EPOCH=0
 NET_TS=0
 net_hour_core() { echo "$(( $1 + 28800 ))" | TZ=UTC awk '{print strftime("%Y%m%d_%H", $1)}'; }
+
+# 云端当前整点：index.txt 第一行就是 CI 本轮渲染的第一张（= 云端当前小时）。
+# 比设备本地时钟可靠得多 —— Kindle 重启后时钟常错乱，淘宝时间戳又是 HTTP
+# 明文，换 WiFi / 有门户认证的网络经常拿不到。这里走已验证可用的 GitHub
+# HTTPS raw，顺带把 index.txt 缓存下来供取图失败时挑最新一张。
+dash_hour() {
+    local fn now
+    now=$(date +%s 2>/dev/null || echo 0)
+    if [ ! -s "$IDX_CACHE" ] || [ $(( now - ${IDX_TS:-0} )) -ge 3000 ]; then
+        curl -sL -m 15 -H "Accept: application/vnd.github.raw" \
+             -o "$IDX_CACHE" "$GH_INDEX" 2>/dev/null || return 1
+        IDX_TS=$now
+    fi
+    fn=$(head -1 "$IDX_CACHE" 2>/dev/null)
+    case "$fn" in
+        20??????_??.png) echo "${fn%.png}"; return 0 ;;
+    esac
+    return 1
+}
+
 hourfile() {
+    # 1) 云端整点（首选，同时验证外网确实可达）
+    dash_hour && return
+    # 2) 淘宝 HTTP 时间戳（旧路径，缓存 1 小时）
     local now=$(date +%s 2>/dev/null || echo 0)
     if [ "$NET_EPOCH" -ne 0 ] && [ $((now - NET_TS)) -lt 3600 ]; then
         net_hour_core "$NET_EPOCH"; return
@@ -172,6 +234,7 @@ hourfile() {
         NET_EPOCH=$(( ms / 1000 )); NET_TS=$(date +%s 2>/dev/null || echo 0)
         net_hour_core "$NET_EPOCH"; return
     fi
+    # 3) 设备本地时钟（最后兜底）
     date +%Y%m%d_%H
 }
 
@@ -228,10 +291,34 @@ fetch_one() {
         # 注意：竖屏图要写进 cur_l.png（当前版式的缓存位），
         # 不能直接 mv 到 IMG（那会把竖屏图存成竖屏缓存，版式就错位了）。
         log "横屏图缺失，回退竖屏 $h.png"
-        fetch "$h" "$IMG_L"
-        return $?
+        fetch "$h" "$IMG_L" && return 0
+    else
+        fetch "$h" "$IMG_P" && return 0
     fi
-    fetch "$h" "$IMG_P"
+
+    # ---- 兜底：按小时拼出的图取不到时，改用云端 index.txt 里最新一张 ----
+    # 换 WiFi / 重启后设备时钟错乱，按本地 date 拼出的小时名在 dash 分支
+    # 根本不存在；没有这一层就永远停在旧缓存图（用户看到的「11 点画面」）。
+    log "按小时 $h 取图失败，尝试云端最新一张"
+    [ -s "$IDX_CACHE" ] || dash_hour >/dev/null 2>&1
+    if [ -s "$IDX_CACHE" ]; then
+        if [ "$ORIENT" = "l" ]; then
+            fn=$(grep '_land\.png' "$IDX_CACHE" | head -1)
+            [ -z "$fn" ] && fn=$(grep '\.png' "$IDX_CACHE" | head -1)
+        else
+            fn=$(grep '\.png' "$IDX_CACHE" | grep -v '_land' | head -1)
+        fi
+        case "$fn" in
+            *.png)
+                h2="${fn%.png}"
+                if [ "$h2" != "$h" ] && fetch "$h2"; then
+                    log "兜底取图成功: $fn"
+                    return 0
+                fi
+                ;;
+        esac
+    fi
+    return 1
 }
 
 refresh_screen() {
@@ -501,14 +588,14 @@ else
 fi
 sleep 1
 
-# 防息屏要提前：下面 wifi_on 最长要等 90 秒，
+# 防息屏要提前：下面 wifi_on 最长要等 70 秒，
 # 若期间 Kindle 自动息屏，用户会以为"画面闪了一下就没了"。
 # keep_awake 用 lipc 的 preventScreenSaver 属性；实测该属性在部分固件上
 # 不存在（Probe5 只探到 state/battLevel/isCharging），失败也无所谓，
 # 下面的 rtc wakealarm 与定期补绘才是真正兜底。
 keep_awake
 
-# ---- 关键 2：先把缓存画面立刻画出来，绝不让用户对着空白屏等 90~140 秒 ----
+# ---- 关键 2：先把缓存画面立刻画出来，绝不让用户对着空白屏等 70 秒 ----
 # 原逻辑先等 WiFi + 取图才画图，导致"点了没反应"；
 # 用户等不及反复点击 -> dash_on.sh 的 killall 杀掉正在取图的实例 -> 永远出不来画面。
 if [ -s "$IMG" ]; then
@@ -519,6 +606,7 @@ else
 fi
 
 wifi_on
+report_diag "boot"
 sync_clock && log "校时完成: $(date)" || log "校时失败，依赖本地时钟"
 keep_awake
 
@@ -529,6 +617,7 @@ if refresh_screen "$h"; then
 else
     sleep 20; wifi_on; refresh_screen "$h" && LAST=$h || log "首屏取图失败，将沿用旧图"
 fi
+report_diag "first"
 
 # 补绘两遍：e-ink 局部刷新有残影，且取图期间可能有过渡帧
 sleep 3
@@ -581,6 +670,19 @@ while :; do
 
     keep_awake
     hd=$(date +%Y%m%d_%H)
+
+    # ---- 保画面补绘：根治「停留几秒画面就消失」----
+    # 这个现象就是 GUI 周期性重绘把仪表盘盖掉了。换 WiFi / 重启后，
+    # GUI 冻结未必生效（服务名或状态可能变了），光靠冻结不可靠。
+    # 不管冻结成没成，都周期性把缓存图重画一遍：即使被覆盖，
+    # REDRAW_SECS 秒内一定刷回来。同一张图重画，像素不变，只是闪一下。
+    # 放一个 /mnt/us/dash/no_redraw 文件即可关闭这层兜底。
+    tnow=$(date +%s 2>/dev/null || echo 0)
+    if [ ! -f /mnt/us/dash/no_redraw ] && [ -s "$IMG" ] && \
+       [ $(( tnow - LAST_REDRAW )) -ge "$REDRAW_SECS" ] 2>/dev/null; then
+        eips -f -g "$IMG" >> "$LOG" 2>&1
+        LAST_REDRAW=$tnow
+    fi
 
     # ---- 电量跟进取图 ----
     # 整点取到的那张图是上一轮 CI（上小时 :17）渲染的，电量滞后约 1 小时。
