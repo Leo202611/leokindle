@@ -54,9 +54,9 @@ say() {
 }
 
 # 脚本类文件：必须全部经 WiFi 下发，一个都不能依赖 USB 预置
-SH_FILES="dashd_v5.sh dash_on_v5.sh dash_on_land.sh dash_on_port.sh dash_off.sh dash_update.sh"
+SH_FILES="dashd_v5.sh dash_on_v5.sh dash_on_land.sh dash_on_port.sh dash_off.sh dash_update.sh install_screensaver.sh"
 # 其中需要装进 KUAL bin/ 的入口
-ENTRIES="dash_on_v5.sh dash_on_land.sh dash_on_port.sh dash_off.sh dash_update.sh"
+ENTRIES="dash_on_v5.sh dash_on_land.sh dash_on_port.sh dash_off.sh dash_update.sh install_screensaver.sh"
 
 mkdir -p "$DST" "$EXT/bin" 2>/dev/null
 : > "$LOG" 2>/dev/null
@@ -149,6 +149,23 @@ pull_png() {
 pull_png cur_p.png ""
 pull_png cur_l.png "land"
 
+# ---- 2.5 屏保图（linkss 格式：bg_ss00.png, 600x800 8位灰度）----
+# 供 KUAL「设为屏保」使用。优先电脑 HTTP，回退 GitHub main。
+if curl -sL -m 40 -o "$DST/bg_ss00.png.tmp" "http://$SRV/bg_ss00.png" 2>/dev/null \
+   && [ -s "$DST/bg_ss00.png.tmp" ] && png_ok "$DST/bg_ss00.png.tmp"; then
+    mv "$DST/bg_ss00.png.tmp" "$DST/bg_ss00.png"
+    say "OK  bg_ss00.png (电脑, $(wc -c < "$DST/bg_ss00.png") bytes)"
+else
+    rm -f "$DST/bg_ss00.png.tmp"
+    if gh_raw "bg_ss00.png" main "$DST/bg_ss00.png" \
+       && [ -s "$DST/bg_ss00.png" ] && png_ok "$DST/bg_ss00.png"; then
+        say "OK  bg_ss00.png (GitHub/main, $(wc -c < "$DST/bg_ss00.png") bytes)"
+    else
+        rm -f "$DST/bg_ss00.png"
+        say "WARN bg_ss00.png 未取到（不影响仪表盘，仅「设为屏保」暂不可用）"
+    fi
+fi
+
 # ---- 3. 装 KUAL 入口（全部来自上面 WiFi 下载的副本）----
 for e in $ENTRIES; do
     if [ -f "$DST/$e" ]; then
@@ -204,6 +221,11 @@ cat > "$MENU.new" <<'JSON'
 					"name": "在线更新(WiFi)",
 					"action": "bin/dash_update.sh",
 					"exitmenu": true
+				},
+				{
+					"name": "设为屏保(bg_ss00.png)",
+					"action": "bin/install_screensaver.sh",
+					"exitmenu": true
 				}
 			]
 		}
@@ -215,7 +237,7 @@ mv "$MENU.new" "$MENU" && say "OK  写入 $MENU"
 # ---- 5. 自检 ----
 say "---- 自检 ----"
 MISS=0
-for f in $SH_FILES cur_p.png cur_l.png; do
+for f in $SH_FILES cur_p.png cur_l.png bg_ss00.png; do
     if [ -s "$DST/$f" ]; then
         say "  $f: $(wc -c < "$DST/$f") bytes"
     else
