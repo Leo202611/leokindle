@@ -23,6 +23,10 @@ except Exception:
 
 W, H = 600, 800   # Kindle 8 (2016) 屏幕为 600x800 竖屏，必须按此尺寸渲染，否则右侧/底部会被裁
 WL, HL = 800, 600  # 横屏版式尺寸（同一块面板旋转 90° 使用）
+
+# 待机画面每天自动更新的整点。必须与设备端
+# /mnt/us/dash/ss_config.sh 的 SS_HOURS 保持一致（2026-11-04 用户定案）。
+SS_SLOTS = (6, 9, 12, 15, 18)
 TZ = "Asia%2FShanghai"
 
 # ---------------------------------------------------------------------------
@@ -1050,6 +1054,20 @@ if __name__ == "__main__":
                 lf = os.path.join(args.outdir, at.strftime("%Y%m%d_%H") + "_land.png")
                 render_landscape(data, lf, at)
                 names.append(os.path.basename(lf))
+
+        # 待机画面「当前应显示的槽位」：取最近一次已发生的 6/9/12/15/18。
+        # 设备在非更新点（如 20:58）做安装兜底/启动补刷时取这张，屏保应停留在
+        # 18:00 那次更新的画面，而不是显示 20:00 的实时图。
+        # 过去小时的逐小时图已被滚动窗口清掉，不能用 out/ 里的 PNG 复制，
+        # 必须用同一份 data 现场渲染任意时刻（render() 支持 at 参数）。
+        past = [s for s in SS_SLOTS if s <= base.hour]
+        if past:
+            slot_at = base.replace(hour=max(past))
+        else:
+            slot_at = (base - datetime.timedelta(days=1)).replace(hour=max(SS_SLOTS))
+        render(data, os.path.join(args.outdir, "ss_prev.png"), slot_at)
+        print("当前应显示槽位: %s -> ss_prev.png" % slot_at.strftime("%m-%d %H:00"))
+
         # 底部状态栏右侧电量位元数据：记录「显示 / 留白」状态，
         # 只为 CI 流程与将来调试留档，内容不再被设备端读取。
         with open(os.path.join(args.outdir, "batt_pos.txt"), "w", encoding="utf-8") as f:

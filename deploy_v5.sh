@@ -174,9 +174,10 @@ pull_png cur_p.png ""
 pull_png cur_l.png "land"
 
 # ---- 2.5 屏保底图（linkss 格式：bg_ss00.png, 600x800 8位灰度）----
-# 优先取云端每次 CI 刷新的 ss_latest.png，避免把中午 12:00 生成的静态图
-# 当成屏保装进去（2026-11-04 用户看到旧画面就是这个原因）。
-# 顺序：GitHub/dash 槽位最新 -> 电脑 HTTP -> GitHub/main 静态兜底。
+# 优先取云端 ss_latest.png。它的语义是「最近一次已发生的更新槽位」画面
+# （20:58 时应显示 18:00 那张），不是当前小时实时图；这样也避免把
+# 中午 12:00 生成的静态图当屏保装进去。
+# 顺序：GitHub/dash ss_latest -> 电脑 HTTP -> GitHub/main 静态兜底。
 SS_OK=0
 if gh_raw "ss_latest.png" dash "$DST/bg_ss00.png.tmp" \
    && [ -s "$DST/bg_ss00.png.tmp" ] && png_ok "$DST/bg_ss00.png.tmp"; then

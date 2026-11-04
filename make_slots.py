@@ -73,9 +73,22 @@ def main() -> None:
         print(f"槽位 {s:02d}: {src} -> {dst_name}")
         lines.append(f"{dst_name} -> {src}")
 
-    normalize(os.path.join(out, names[0]), os.path.join(out, "ss_latest.png"))
-    print(f"最新图: {names[0]} -> ss_latest.png")
-    lines.append(f"ss_latest.png -> {names[0]}")
+    # ss_latest.png 是设备「非更新点」补刷 / 安装兜底时取的图。
+    # 语义：当前应该显示的那一次更新槽位（最近一次已发生的 6/9/12/15/18），
+    # 不是 CI 当前小时的实时图。
+    # 用户 20:58 反馈：屏保显示「更新 20:00」，但按 5 个时辰的设定，
+    # 18:00 之后到次日 6:00 就应该一直停留在 18:00 的画面。
+    # ss_prev.png 由 render.py 在批量渲染时用同一份天气数据现场生成
+    # （过去小时的逐小时图已被滚动窗口清掉，无法复制）。
+    prev = os.path.join(out, "ss_prev.png")
+    if os.path.isfile(prev):
+        normalize(prev, os.path.join(out, "ss_latest.png"))
+        print("当前应显示槽位: ss_prev.png -> ss_latest.png")
+        lines.append("ss_latest.png -> ss_prev.png (最近一次已发生的更新槽位)")
+    else:
+        normalize(os.path.join(out, names[0]), os.path.join(out, "ss_latest.png"))
+        print(f"WARN 缺 ss_prev.png，回退当前小时图: {names[0]} -> ss_latest.png")
+        lines.append(f"ss_latest.png -> {names[0]} (缺 ss_prev.png 的兜底)")
 
     with open(os.path.join(out, "slots.txt"), "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
