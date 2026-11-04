@@ -2,7 +2,10 @@
 # Kindle 仪表盘 v5 · WiFi 一键部署脚本
 #
 # 用法（在 Kindle 的 KUAL 里执行本脚本，或用任何能跑 shell 的方式）：
-#   sh /mnt/us/dash/deploy_v5.sh
+#   sh /mnt/us/dash/deploy_v5.sh          # 只部署
+#   sh /mnt/us/dash/deploy_v5.sh start    # 部署后按原版式启动
+#   sh /mnt/us/dash/deploy_v5.sh land     # 部署后以【横屏】启动
+#   sh /mnt/us/dash/deploy_v5.sh port     # 部署后以【竖屏】启动
 #
 # 它做三件事：
 #   1) 从电脑的 HTTP 服务拉取 dashd_v5.sh / dash_on_v5.sh / 两张新排版图
@@ -57,6 +60,8 @@ pull_sh() {
 
 pull_sh dashd_v5.sh
 pull_sh dash_on_v5.sh
+pull_sh dash_on_land.sh
+pull_sh dash_on_port.sh
 
 # ---- 2. 拉新排版图 ----
 # 优先从电脑 HTTP 服务拿（那是刚渲染好的当小时图）；
@@ -93,11 +98,17 @@ pull_png cur_p.png ""
 pull_png cur_l.png "land"
 
 # ---- 3. 装 KUAL 入口 ----
-if [ -f "$DST/dash_on_v5.sh" ]; then
-    cp "$DST/dash_on_v5.sh" "$EXT/bin/dash_on_v5.sh" 2>/dev/null \
-        && chmod 755 "$EXT/bin/dash_on_v5.sh" 2>/dev/null \
-        && say "OK  安装 KUAL 入口 $EXT/bin/dash_on_v5.sh"
-fi
+# 四个入口：沿用版式 / 横屏 / 竖屏 / 由 dash_off 负责关闭。
+for e in dash_on_v5.sh dash_on_land.sh dash_on_port.sh; do
+    if [ -f "$DST/$e" ]; then
+        cp "$DST/$e" "$EXT/bin/$e" 2>/dev/null \
+            && chmod 755 "$EXT/bin/$e" 2>/dev/null \
+            && say "OK  安装 KUAL 入口 $EXT/bin/$e" \
+            || say "FAIL 安装 $e"
+    else
+        say "FAIL 源缺失 $e"
+    fi
+done
 
 # ---- 4. 更新 KUAL 菜单 ----
 MENU="$EXT/menu.json"
@@ -112,8 +123,18 @@ if [ -f "$MENU" ]; then
 			"priority": 1,
 			"items": [
 				{
-					"name": "启动仪表盘 v5",
+					"name": "启动仪表盘(沿用版式)",
 					"action": "bin/dash_on_v5.sh",
+					"exitmenu": true
+				},
+				{
+					"name": "切换为横屏",
+					"action": "bin/dash_on_land.sh",
+					"exitmenu": true
+				},
+				{
+					"name": "切换为竖屏",
+					"action": "bin/dash_on_port.sh",
 					"exitmenu": true
 				},
 				{
@@ -141,20 +162,32 @@ fi
 
 # ---- 5. 自检 ----
 say "---- 自检 ----"
-for f in dashd_v5.sh dash_on_v5.sh cur_p.png cur_l.png; do
+for f in dashd_v5.sh dash_on_v5.sh dash_on_land.sh dash_on_port.sh cur_p.png cur_l.png; do
     if [ -s "$DST/$f" ]; then
         say "  $f: $(wc -c < "$DST/$f") bytes"
     else
         say "  $f: 缺失"
     fi
 done
-[ -s "$EXT/bin/dash_on_v5.sh" ] && say "  KUAL入口: OK" || say "  KUAL入口: 缺失"
+for e in dash_on_v5.sh dash_on_land.sh dash_on_port.sh; do
+    [ -s "$EXT/bin/$e" ] && say "  KUAL入口 $e: OK" || say "  KUAL入口 $e: 缺失"
+done
 
 # ---- 6. 可选：立刻启动 ----
-if [ "$1" = "start" ]; then
-    say "---- 立刻启动 ----"
-    sh "$EXT/bin/dash_on_v5.sh" 2>&1 | head -5
-    sleep 3
+# start=沿用版式 / land=横屏 / port=竖屏
+case "$1" in
+    start|land|port) BOOT="$1" ;;
+    *) BOOT="" ;;
+esac
+if [ -n "$BOOT" ]; then
+    say "---- 立刻启动 ($BOOT) ----"
+    case "$BOOT" in
+        land) sh "$EXT/bin/dash_on_land.sh" 2>&1 | head -5 ;;
+        port) sh "$EXT/bin/dash_on_port.sh" 2>&1 | head -5 ;;
+        *)    sh "$EXT/bin/dash_on_v5.sh" 2>&1 | head -5 ;;
+    esac
+    sleep 6
+    say "当前版式: $(cat /mnt/us/dash/orient 2>/dev/null)"
     say "守护日志尾部:"
     tail -12 "$DST/dashd.log" 2>/dev/null | sed 's/^/  /'
 fi

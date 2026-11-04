@@ -11,19 +11,40 @@
 export PATH=/usr/sbin:/usr/bin:/bin:/sbin:$PATH
 mkdir -p /mnt/us/dash
 
+# ---- 版式参数：land=横屏 / port=竖屏 / 空=沿用当前 ----
+# KUAL 的 action 不能带参数，所以由 dash_on_land.sh / dash_on_port.sh
+# 两个薄封装调用本脚本并传参；menu.json 指向那两个文件。
+FORCE=0
+case "$1" in
+    land|l)   echo l > /mnt/us/dash/orient; FORCE=1 ;;
+    port|p)   echo p > /mnt/us/dash/orient; FORCE=1 ;;
+esac
+
+# 当前版式对应的缓存图。原来这里写死 cur_p.png，
+# 横屏模式下会把竖屏图画到屏幕上，一按「启动」版式就错乱。
+ORIENT=$(cat /mnt/us/dash/orient 2>/dev/null)
+case "$ORIENT" in l) CUR=/mnt/us/dash/cur_l.png ;; *) CUR=/mnt/us/dash/cur_p.png ;; esac
+
 PID=$(cat /var/local/dashd.pid 2>/dev/null)
 
 # 实例是否还活着：看 /proc 下有没有这个 PID 的目录。
 # 不要用 `kill -0 $PID` —— Kindle 的 busybox/ash 上对早已不存在的 PID 也可能返回 0。
 if [ -n "$PID" ] && [ -d "/proc/$PID" ]; then
-    # 已有实例在跑：不要动它（killall 会触发退出路径，白白重画一次）。
-    # 立刻重绘当前画面，并写刷新标记让守护进程去取新图。
-    if [ -s /mnt/us/dash/cur_p.png ]; then
-        eips -f -g /mnt/us/dash/cur_p.png >/dev/null 2>&1
+    if [ "$FORCE" = "1" ]; then
+        # 版式切换必须重启实例：守护进程把 ORIENT 存在内存变量里，
+        # 外部改 orient 文件它不会重读，否则就是「点了横屏、画面还是竖的」。
+        touch /var/local/dash_stop
+        kill "$PID" 2>/dev/null
+        sleep 4
+        rm -f /var/local/dash_stop /var/local/dashd.pid
+    else
+        # 沿用当前版式：不要动它（killall 会触发退出路径，白白重画一次）。
+        # 立刻重绘当前版式的画面，并写刷新标记让守护进程去取新图。
+        [ -s "$CUR" ] && eips -f -g "$CUR" >/dev/null 2>&1
+        touch /var/local/dash_refresh
+        sync
+        exit 0
     fi
-    touch /var/local/dash_refresh
-    sync
-    exit 0
 fi
 
 # 没有实例在跑：清理残留进程（覆盖新旧各种脚本名）后启动一个。
