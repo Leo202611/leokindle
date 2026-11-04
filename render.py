@@ -723,20 +723,29 @@ def render(data, out, at=None):
 
 # ---- 底部状态栏右侧：电量显示 ----
 #
-# 决定（2026-11-04）：不再让设备端用 eips 叠加实时数字，
-# 改为把「电量：94」整串直接烧进 PNG。
-# 原因：
-#   1) eips 内置字体没有中文字形、也没有 '%'，只能"云端烧中文 + 设备端写纯数字"；
-#   2) eips 用的是字符格坐标，在 600x800 上定位极易错位
-#      （实测行/列参数含义与预想相反，字符格 13.65x38.7 与网格也对不齐），
-#      叠加的数字经常直接跑到画面外；
-#   3) 收益很低：电量每小时才变一次，不值得为它承担错位风险。
-# 若以后确实需要实时数字，下面已记好实测标定值，重新启用设备端叠加即可。
-BATT_TEXT = "电量：94"   # 直接烧进画面的电量文案
+# 历史（2026-11-04 上午）：曾经把「电量：94」整串写死烧进 PNG。
+# 那是当时的主动简化，不是技术限制 —— 设备端用 eips 叠加数字的方案
+# 因字符格坐标（13.65x38.7）对不齐、且内置字体无中文字形而被否掉。
+#
+# 现状：电量文案改为**运行时注入**。图是 CI 用 `--hours 26` 提前批量
+# 渲染的，云端渲染那一刻并不知道设备当时的电量；只有把设备实测电量
+# 送进渲染环节（环境变量 DASH_BATT / 命令行 --batt），这里才显示真实值。
+# 未提供时显示「电量：--」，不再伪造一个固定的 94。
+#
+# 设备端读电量有现成接口（Probe5 实测确认属性真实存在）：
+#   lipc-get-prop com.lab126.powerd battLevel   -> 0..100
+#   lipc-get-prop com.lab126.powerd isCharging  -> 0/1
+# 也可用 sysfs：/sys/class/power_supply/bd7181x_bat/capacity
+def batt_text():
+    v = (os.environ.get("DASH_BATT") or "").strip()
+    if not v.isdigit() or not (0 <= int(v) <= 100):
+        return "电量：--"
+    s = "电量：%d" % int(v)
+    if (os.environ.get("DASH_BATT_CHARGING") or "").strip() == "1":
+        s += " 充电中"
+    return s
 
-# 底部状态栏统一字号：左侧「更新 时间」与右侧「电量：94」必须一样大。
-# 之前电量 21px、更新时间竖屏 15px / 横屏 16px，右侧明显大出一截。
-# 现在两边共用同一个常量，跨版式也统一，避免以后再各自分叉。
+# 底部状态栏统一字号：左侧「更新 时间」与右侧电量文案必须一样大。
 FOOTER_FONT_SIZE = 16
 BATT_FONT_SIZE = FOOTER_FONT_SIZE   # 保留别名，兼容既有引用
 
@@ -752,10 +761,10 @@ EIPS_CELL_H = 38.7
 
 
 def draw_footer(d, left_x, right_x, at):
-    """画底部状态栏：左侧「更新 时间」，右侧「电量：94」。竖屏与横屏共用。"""
+    """画底部状态栏：左侧「更新 时间」，右侧电量文案。竖屏与横屏共用。"""
     d.text((left_x + 2, BATT_BASE_Y), "更新 " + at.strftime("%m-%d %H:%M"),
            font=font(FONT_REG, FOOTER_FONT_SIZE), fill=BLACK, anchor="ls")
-    d.text((right_x, BATT_BASE_Y), BATT_TEXT,
+    d.text((right_x, BATT_BASE_Y), batt_text(),
            font=font(FONT_REG, FOOTER_FONT_SIZE), fill=BLACK, anchor="rs")
 
 
@@ -927,11 +936,11 @@ def render_landscape(data, out, at=None):
     d.line([(M, 552), (RIGHT, 552)], fill=LGRAY, width=2)
     d.text((M + 2, 560), "更新 " + at.strftime("%m-%d %H:%M"),
            font=font(FONT_REG, FOOTER_FONT_SIZE), fill=BLACK)
-    # 电量：整串由云端烧入（设备端不再做 eips 叠加）。
+    # 电量：整串由云端烧入（设备端不再做 eips 叠加），数值由 DASH_BATT 注入。
     # 锚点用 "ra"（右对齐 + 顶对齐）与左侧默认的 "la" 保持一致：
     # 原来用 "rs"（右对齐 + 基线对齐），同样 y=560 却比左侧低约一个字高，
     # 字号统一后这个错位反而更明显。
-    d.text((RIGHT, 560), BATT_TEXT, font=font(FONT_REG, FOOTER_FONT_SIZE),
+    d.text((RIGHT, 560), batt_text(), font=font(FONT_REG, FOOTER_FONT_SIZE),
            fill=BLACK, anchor="ra")
 
     # 旋转成 600x800。
@@ -963,7 +972,16 @@ if __name__ == "__main__":
     ap.add_argument("--outdir", default=".", help="批量模式输出目录")
     ap.add_argument("--landscape", action="store_true",
                     help="生成横屏版（800x600 画面旋转 90 度后输出 600x800）")
+    ap.add_argument("--batt", type=int, default=None,
+                    help="设备实测电量 0-100，注入底部状态栏（不给则显示「电量：--」）")
+    ap.add_argument("--charging", action="store_true",
+                    help="设备正在充电，电量后追加「充电中」")
     args = ap.parse_args()
+
+    if args.batt is not None:
+        os.environ["DASH_BATT"] = str(args.batt)
+    if args.charging:
+        os.environ["DASH_BATT_CHARGING"] = "1"
 
     LOCATION = resolve_location()
     print("位置: %s (%s, %s) 来源=%s" % (city_label(), LOCATION.get("lat"),
@@ -985,11 +1003,12 @@ if __name__ == "__main__":
                 lf = os.path.join(args.outdir, at.strftime("%Y%m%d_%H") + "_land.png")
                 render_landscape(data, lf, at)
                 names.append(os.path.basename(lf))
-        # 电量元数据：设备端已不再做 eips 叠加（改为云端直接烧「电量：94」），
+        # 电量元数据：文案由 DASH_BATT / --batt 注入，未注入时为「电量：--」。
         # 这个文件只为 CI 流程与将来调试留档，内容不再被设备端读取。
         with open(os.path.join(args.outdir, "batt_pos.txt"), "w", encoding="utf-8") as f:
             f.write("# 电量显示元数据（当前设备端不读取，仅留档）。\n")
-            f.write("# 现在由云端把「%s」整串烧进 PNG，设备端不做任何 eips 文字叠加。\n" % BATT_TEXT)
+            f.write("# 当前电量文案：%s（由 DASH_BATT / --batt 注入）\n" % batt_text())
+            f.write("# 设备端读电量：lipc-get-prop com.lab126.powerd battLevel / isCharging\n")
             f.write("#\n")
             f.write("# 留档：eips 字符格实测标定值（dash_probe3 v3）\n")
             f.write("#   命令语法 eips [col] [row] \"text\"\n")
