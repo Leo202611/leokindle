@@ -714,7 +714,7 @@ def render(data, out, at=None):
         draw_icon(d, dk, start + 22, 660, 22)
         d.text((start + 54, 660), txt, font=f_one, fill=BLACK, anchor="lm")
 
-    # 底部状态栏：左=更新时间，右=电量文案（整串由云端烧入，左右同为 FOOTER_FONT_SIZE）
+    # 底部状态栏：左=「更新 时间」，右侧默认留白（见 show_batt）
     draw_footer(d, M, RIGHT, at)
 
     img.save(out, "PNG")
@@ -723,19 +723,24 @@ def render(data, out, at=None):
 
 # ---- 底部状态栏右侧：电量显示 ----
 #
-# 历史（2026-11-04 上午）：曾经把「电量：94」整串写死烧进 PNG。
-# 那是当时的主动简化，不是技术限制 —— 设备端用 eips 叠加数字的方案
-# 因字符格坐标（13.65x38.7）对不齐、且内置字体无中文字形而被否掉。
+# 历史（2026-11-04 上午）：曾经把「电量：94」整串写死烧进 PNG；
+# 后来改为运行时注入（DASH_BATT / --batt），由 A 方案云端中转提供真实值。
 #
-# 现状：电量文案改为**运行时注入**。图是 CI 用 `--hours 26` 提前批量
-# 渲染的，云端渲染那一刻并不知道设备当时的电量；只有把设备实测电量
-# 送进渲染环节（环境变量 DASH_BATT / 命令行 --batt），这里才显示真实值。
-# 未提供时显示「电量：--」，不再伪造一个固定的 94。
+# 2026-11-04 中午用户决定：**该位置暂时留白**。
+# 原因：电量每小时才随取图更新一次数值，看着反而别扭，不如不展示。
+# 处理方式是「默认不绘制」而不是删代码 —— 上报链路与 batt_text() 都保留，
+# 以后想恢复只要 --show-batt / DASH_SHOW_BATT=1，不必重写一遍。
 #
-# 设备端读电量有现成接口（Probe5 实测确认属性真实存在）：
+# 设备端读电量接口（Probe5 实测确认）留档：
 #   lipc-get-prop com.lab126.powerd battLevel   -> 0..100
 #   lipc-get-prop com.lab126.powerd isCharging  -> 0/1
 # 也可用 sysfs：/sys/class/power_supply/bd7181x_bat/capacity
+def show_batt():
+    """底部状态栏右侧是否绘制电量。默认 False = 留白。"""
+    return (os.environ.get("DASH_SHOW_BATT") or "").strip() in \
+        ("1", "true", "True", "yes", "on")
+
+
 def batt_text():
     v = (os.environ.get("DASH_BATT") or "").strip()
     if not v.isdigit() or not (0 <= int(v) <= 100):
@@ -745,7 +750,8 @@ def batt_text():
         s += " 充电中"
     return s
 
-# 底部状态栏统一字号：左侧「更新 时间」与右侧电量文案必须一样大。
+# 底部状态栏统一字号：左侧「更新 时间」用 16px；
+# 右侧若恢复显示电量，也必须同字号（历史教训：曾 21px 明显偏大）。
 FOOTER_FONT_SIZE = 16
 BATT_FONT_SIZE = FOOTER_FONT_SIZE   # 保留别名，兼容既有引用
 
@@ -761,11 +767,12 @@ EIPS_CELL_H = 38.7
 
 
 def draw_footer(d, left_x, right_x, at):
-    """画底部状态栏：左侧「更新 时间」，右侧电量文案。竖屏与横屏共用。"""
+    """底部状态栏：左侧「更新 时间」；右侧默认留白（见 show_batt）。竖屏与横屏共用。"""
     d.text((left_x + 2, BATT_BASE_Y), "更新 " + at.strftime("%m-%d %H:%M"),
            font=font(FONT_REG, FOOTER_FONT_SIZE), fill=BLACK, anchor="ls")
-    d.text((right_x, BATT_BASE_Y), batt_text(),
-           font=font(FONT_REG, FOOTER_FONT_SIZE), fill=BLACK, anchor="rs")
+    if show_batt():
+        d.text((right_x, BATT_BASE_Y), batt_text(),
+               font=font(FONT_REG, FOOTER_FONT_SIZE), fill=BLACK, anchor="rs")
 
 
 # ---------------------------------------------------------------------------
@@ -936,12 +943,12 @@ def render_landscape(data, out, at=None):
     d.line([(M, 552), (RIGHT, 552)], fill=LGRAY, width=2)
     d.text((M + 2, 560), "更新 " + at.strftime("%m-%d %H:%M"),
            font=font(FONT_REG, FOOTER_FONT_SIZE), fill=BLACK)
-    # 电量：整串由云端烧入（设备端不再做 eips 叠加），数值由 DASH_BATT 注入。
-    # 锚点用 "ra"（右对齐 + 顶对齐）与左侧默认的 "la" 保持一致：
-    # 原来用 "rs"（右对齐 + 基线对齐），同样 y=560 却比左侧低约一个字高，
-    # 字号统一后这个错位反而更明显。
-    d.text((RIGHT, 560), batt_text(), font=font(FONT_REG, FOOTER_FONT_SIZE),
-           fill=BLACK, anchor="ra")
+    # 右侧电量位：2026-11-04 中午起默认留白（用户要求，见 show_batt）。
+    # 恢复显示时锚点仍用 "ra"（右对齐 + 顶对齐）与左侧默认的 "la" 齐平：
+    # 原来用 "rs"（右对齐 + 基线对齐），同样 y=560 却比左侧低约一个字高。
+    if show_batt():
+        d.text((RIGHT, 560), batt_text(), font=font(FONT_REG, FOOTER_FONT_SIZE),
+               fill=BLACK, anchor="ra")
 
     # 旋转成 600x800。
     # 用 ROTATE_90（逆时针 90 度）：已用 ASCII 标记实测验证过——
@@ -973,15 +980,19 @@ if __name__ == "__main__":
     ap.add_argument("--landscape", action="store_true",
                     help="生成横屏版（800x600 画面旋转 90 度后输出 600x800）")
     ap.add_argument("--batt", type=int, default=None,
-                    help="设备实测电量 0-100，注入底部状态栏（不给则显示「电量：--」）")
+                    help="设备实测电量 0-100（默认不绘制，需配合 --show-batt）")
     ap.add_argument("--charging", action="store_true",
                     help="设备正在充电，电量后追加「充电中」")
+    ap.add_argument("--show-batt", action="store_true",
+                    help="在底部状态栏右侧显示电量；默认该位置留白（等价 DASH_SHOW_BATT=1）")
     args = ap.parse_args()
 
     if args.batt is not None:
         os.environ["DASH_BATT"] = str(args.batt)
     if args.charging:
         os.environ["DASH_BATT_CHARGING"] = "1"
+    if args.show_batt:
+        os.environ["DASH_SHOW_BATT"] = "1"
 
     LOCATION = resolve_location()
     print("位置: %s (%s, %s) 来源=%s" % (city_label(), LOCATION.get("lat"),
@@ -1003,11 +1014,15 @@ if __name__ == "__main__":
                 lf = os.path.join(args.outdir, at.strftime("%Y%m%d_%H") + "_land.png")
                 render_landscape(data, lf, at)
                 names.append(os.path.basename(lf))
-        # 电量元数据：文案由 DASH_BATT / --batt 注入，未注入时为「电量：--」。
-        # 这个文件只为 CI 流程与将来调试留档，内容不再被设备端读取。
+        # 底部状态栏右侧电量位元数据：记录「显示 / 留白」状态，
+        # 只为 CI 流程与将来调试留档，内容不再被设备端读取。
         with open(os.path.join(args.outdir, "batt_pos.txt"), "w", encoding="utf-8") as f:
-            f.write("# 电量显示元数据（当前设备端不读取，仅留档）。\n")
-            f.write("# 当前电量文案：%s（由 DASH_BATT / --batt 注入）\n" % batt_text())
+            f.write("# 底部状态栏右侧电量位元数据（当前设备端不读取，仅留档）。\n")
+            if show_batt():
+                f.write("# 状态：显示，当前文案：%s（由 DASH_BATT / --batt 注入）\n" % batt_text())
+            else:
+                f.write("# 状态：留白（2026-11-04 用户决定暂不展示每小时变化的电量数值）。\n")
+                f.write("#       电量读取/上报/中转链路仍在运行，恢复显示用 --show-batt。\n")
             f.write("# 设备端读电量：lipc-get-prop com.lab126.powerd battLevel / isCharging\n")
             f.write("#\n")
             f.write("# 留档：eips 字符格实测标定值（dash_probe3 v3）\n")
