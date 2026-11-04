@@ -88,8 +88,16 @@ IDX_TS=0
 DIAG_TOPIC="k8dash_diag_7f3c9e2a"
 DIAG_URL="https://ntfy.sh/$DIAG_TOPIC"
 WIFI_IP=""
-REDRAW_SECS=90             # 保画面补绘间隔（秒，仅 GUI 冻结失败时兜底用）
+REDRAW_SECS=600            # 保画面补绘间隔（秒，仅 GUI 冻结失败时兜底用；已大幅调高以降低重绘次数）
 LAST_REDRAW=0
+
+# ---- 深度睡眠（不接电源时延长续航，默认关闭，需实测）----
+# 目标：每天只在 0/6/12/18 点唤醒取图，其余时间让 SoC 真正挂起（suspend），
+# e-ink 双稳态保持画面零耗电，从而不接电源也能撑约一周。
+# 实现：算好到下次更新点的秒数，设 RTC 唤醒后 echo mem 挂起；唤醒后重新冻结 GUI。
+# 风险：本机未在真机实测挂起/唤醒；若 Kindle 不支持会回退到普通轮询（仍正常工作，只是费电）。
+# 启用：把 DEEP_SLEEP=1；禁用：保持 0。挂起期间长按电源键可强制重启恢复。
+DEEP_SLEEP=0
 
 # ---- 更新频率：每天固定几个点，而不是每小时 ----
 # 仪表盘内容（天气/日历/日期）在一小时内几乎不变，每小时整屏刷新既浪费
@@ -99,9 +107,23 @@ LAST_REDRAW=0
 # 云端本来就是逐小时预渲染整套图，所以在固定点取到的仍是当时小时的真实天气，
 # 只是两次更新之间画面会滞留几小时旧数据（可接受）。
 # 想恢复每小时，把 UPDATE_HOURS 设为 "0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23"。
-UPDATE_HOURS="7 12 18 22"
+UPDATE_HOURS="0 6 12 18"
 
 log() { echo "[$(date +"%m-%d %H:%M:%S")] $*" >> "$LOG"; }
+
+# 冻结 GUI 重绘服务（"冻结"而非"杀死"，KUAL 菜单与触摸仍可用）。
+# 启动与深度睡眠唤醒后都会调用，保证 GUI 不会周期性覆盖仪表盘。
+freeze_gui() {
+    if lipc-get-prop "$GUI_FREEZE" state >/dev/null 2>&1; then
+        lipc-set-prop "$GUI_FREEZE" state 0 >> "$LOG" 2>&1
+        touch "$FROZE_FLAG"
+        log "已冻结 GUI 重绘服务: $GUI_FREEZE"
+    else
+        log "无 $GUI_FREEZE 服务，改用 stop/start 方式"
+        initctl stop lab126_gui >> "$LOG" 2>&1 || stop lab126_gui >> "$LOG" 2>&1
+    fi
+}
+
 
 # 读实测电量并上报。上报失败绝不能影响取图与显示：所有 curl 带超时，
 # 且调用方不检查返回值。正常证书校验失败时降级 -k 重试一次（老固件 CA 可能过期）。
@@ -431,6 +453,54 @@ keep_awake() {
     return 0
 }
 
+# 下一个 UPDATE_HOURS 中的小时对应的 epoch（今天或明天）。
+# 用 date +%s / +%H/%M/%S 手工推算，避免依赖 BusyBox date -d 的解析能力。
+next_update_epoch() {
+    now=$(date +%s 2>/dev/null || echo 0)
+    [ "$now" = "0" ] && { echo ""; return; }
+    curh=$(( 10#$(date +%H 2>/dev/null || echo 0) ))
+    curm=$(( 10#$(date +%M 2>/dev/null || echo 0) ))
+    curs=$(( 10#$(date +%S 2>/dev/null || echo 0) ))
+    sec_today=$(( curh*3600 + curm*60 + curs ))
+    best=""
+    for h in $UPDATE_HOURS; do
+        hh=$(( 10#$h ))
+        s=$(( hh*3600 ))
+        [ "$s" -le "$sec_today" ] && s=$(( s + 86400 ))
+        e=$(( now + s - sec_today ))
+        if [ -z "$best" ] || [ "$e" -lt "$best" ]; then best=$e; fi
+    done
+    echo "$best"
+}
+
+# 不接电源时：算好到下次更新点的秒数，设 RTC 唤醒后挂起，e-ink 零耗电保持画面。
+# 唤醒后脚本从 echo mem 之后继续，重新冻结 GUI 进入下一轮。
+# 若挂起不可用（返回非 0），回退普通睡眠（按剩余时间，最多 5 分钟），避免空转。
+schedule_deep_sleep() {
+    wake=$(next_update_epoch)
+    [ -z "$wake" ] && { sleep 60; return 1; }
+    secs=$(( wake - $(date +%s 2>/dev/null || echo 0) ))
+    [ "$secs" -le 5 ] && { sleep 60; return 1; }
+    [ "$secs" -gt 43200 ] && secs=43200   # 单次最多睡 12h，防数值异常
+    log "深度睡眠 ~$secs 秒（至下次更新点）"
+    wifi_off 2>/dev/null
+    ok=1
+    if command -v rtcwake >/dev/null 2>&1; then
+        rtcwake -s "$secs" -m mem >> "$LOG" 2>&1; ok=$?
+    elif [ -w /sys/class/rtc/rtc0/wakealarm ]; then
+        echo 0 > /sys/class/rtc/rtc0/wakealarm 2>/dev/null
+        echo "$secs" > /sys/class/rtc/rtc0/wakealarm 2>/dev/null
+        echo mem > /sys/power/state 2>/dev/null; ok=$?
+    fi
+    if [ "$ok" != "0" ]; then
+        f=$secs; [ "$f" -gt 300 ] && f=300; [ "$f" -lt 30 ] && f=30
+        sleep "$f"
+    fi
+    log "已从深度睡眠唤醒，重新冻结 GUI"
+    freeze_gui
+    return 0
+}
+
 # ---------- 电源键感知 ----------
 #
 # 实测结论（Probe4/Probe5/Probe6 三轮探针，逐层排查）：
@@ -600,14 +670,7 @@ setsid /mnt/us/dash/dashd_v5.sh --watchdog $$ >> "$LOG" 2>&1 &
 #
 # 先试温和方案：
 GUI_FREEZE="com.lab126.gui.refresh"
-if lipc-get-prop "$GUI_FREEZE" state >/dev/null 2>&1; then
-    lipc-set-prop "$GUI_FREEZE" state 0 >> "$LOG" 2>&1
-    touch "$FROZE_FLAG"
-    log "已冻结 GUI 重绘服务: $GUI_FREEZE"
-else
-    log "无 $GUI_FREEZE 服务，改用 stop/start 方式"
-    initctl stop lab126_gui >> "$LOG" 2>&1 || stop lab126_gui >> "$LOG" 2>&1
-fi
+freeze_gui
 sleep 1
 
 # 防息屏要提前：下面 wifi_on 最长要等 70 秒，
@@ -690,7 +753,9 @@ while :; do
         continue
     fi
 
-    keep_awake
+    # 深度睡眠模式下不调用 keep_awake（它会设 10 分钟 RTC 闹钟阻止休眠）；
+    # 由 schedule_deep_sleep 统一负责唤醒与挂起。
+    [ "$DEEP_SLEEP" = "1" ] || keep_awake
     hr=$(date +%H 2>/dev/null); hr=$(( 10#$hr ))   # 当前小时，去前导零防八进制
     hd=$(date +%Y%m%d_%H)
 
@@ -739,6 +804,8 @@ while :; do
     [ -z "$LAST" ] && do_update=1
     if [ "$do_update" != "1" ]; then
         [ "$hd" != "$LAST_SKIP" ] && { LAST_SKIP=$hd; log "非更新点($hr 时)，跳过取图"; }
+        # 深度睡眠：直接挂起到下次更新点（不空转等待）
+        [ "$DEEP_SLEEP" = "1" ] && schedule_deep_sleep
         continue
     fi
 
@@ -755,6 +822,8 @@ while :; do
         refresh_screen "$h" && LAST=$h
     fi
     wifi_off
+    # 深度睡眠：取图完成后挂起到下次更新点
+    [ "$DEEP_SLEEP" = "1" ] && schedule_deep_sleep
     log "WiFi 已关闭"
 done
 
