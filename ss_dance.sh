@@ -2,12 +2,13 @@
 # KUAL「阶段2 WiFi dance 开关」
 #
 # 在设备本地写入 /mnt/us/dash/ss_config.local 的 SS_WIFI_DANCE，并重启调度器使其生效。
-# 用法：ss_dance.sh 1 开（深睡唤醒后静默重连失败时，改用 toggleSuspend 模拟电源键强制重连）
-#       ss_dance.sh 0 关（默认，纯静默重连）
+# 用法：ss_dance.sh 1 开（默认；toggleSuspend 模拟电源键强制重连）
+#       ss_dance.sh 0 关（纯静默重连，本固件实测会失败，不推荐）
 #
-# 背景：5.16.x 深睡后 WiFi 在 suspended 态无法静默重连；Kindle 8 是 i.MX，静默手段通常够用
-# （fanzhh 在 5.11.1.1 上 8/8 成功）。只有真机实测 wifi_restore 的 150s 静默重连仍失败，
-# 才需要开 dance 兜底（每次唤醒多约 10s active，仍远优于常亮）。
+# 背景：5.16.x 深睡后 WiFi 在 suspended 态无法静默重连。
+# 【2026-11-06 真机】Kindle 8 / 5.16.2.1.1 + linkss：dance=0 时 00:00 整点不更新；
+# dance=1 时 01:00 整点自动更新成功（全程未碰设备）。故本固件 dance 为必需项、默认开。
+# 每次唤醒多约 10s active，仍远优于常亮。
 # 写完复用 ss_enable.sh 完成「停守护→拷 tmpfs→起 upstart」。
 export PATH=/usr/sbin:/usr/bin:/bin:/sbin:$PATH
 D=/mnt/us/dash

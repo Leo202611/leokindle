@@ -320,12 +320,12 @@ cat > "$MENU.new" <<'JSON'
 					"exitmenu": true
 				},
 				{
-					"name": "12 阶段2 WiFi dance:开(兜底重连)",
+					"name": "12 阶段2 WiFi dance:开(默认,恢复用)",
 					"action": "bin/ss_dance.sh 1",
 					"exitmenu": true
 				},
 				{
-					"name": "13 阶段2 WiFi dance:关(纯静默)",
+					"name": "13 阶段2 WiFi dance:关(不推荐,会不更新)",
 					"action": "bin/ss_dance.sh 0",
 					"exitmenu": true
 				}

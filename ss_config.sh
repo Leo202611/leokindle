@@ -61,26 +61,41 @@ SS_RTC=1
 
 # 唤醒后 WiFi 恢复（阶段2 深睡后必需）：
 # 5.16.x 休眠后 WiFi 在 suspended 态无法程序重连（koreader 5.18.6 / fanzhh 均已确认）。
-# 静默重连总预算（秒）；fanzhh 实测需给到 ~150s 才稳（15s/30s 两段偶发失败）。
+# 纯静默模式的总预算（秒）；fanzhh 实测需给到 ~150s 才稳（15s/30s 两段偶发失败）。
 SS_WIFI_RESTORE_T="${SS_WIFI_RESTORE_T:-150}"
-# 「模拟电源键」dance 兜底（koreader 5.18.6 验证：强制 active 后 WiFi 约 3s 连通）。
-# 默认关——该 lipc 命令在不同固件命名未必一致；静默重连仍失败时，在 ss_config.local
-# 写 SS_WIFI_DANCE=1 再测。开启后每次唤醒多约 10s active，仍远优于常亮。
-SS_WIFI_DANCE="${SS_WIFI_DANCE:-0}"
+# dance 开启时，静默只做这么久的快速试探就转 dance。本固件实测静默基本连不上，
+# 白等 150s 会让每次唤醒多 active 两分半（24 次/天 ≈ 1h/天），直接拖垮周级续航。
+SS_WIFI_SILENT_T="${SS_WIFI_SILENT_T:-15}"
+# 「模拟电源键」dance：toggleSuspend 强制 active 后 WiFi 约 3s 连通。
+# 【2026-11-06 真机验证】Kindle 8 / 5.16.2.1.1 + linkss：
+#   SS_WIFI_DANCE=0（纯静默）-> 00:00 整点不更新，画面滞留前一日 23:00；
+#   SS_WIFI_DANCE=1          -> 01:00 整点自动更新成功，全程无人工干预。
+# 故本固件把 dance 设为默认开（1）：干净部署即可开箱使用阶段2 深睡。
+# KUAL「13」会写 SS_WIFI_DANCE=0 关掉它，一般不推荐。
+SS_WIFI_DANCE="${SS_WIFI_DANCE:-1}"
 
 [ -f /mnt/us/dash/ss_config.local ] && . /mnt/us/dash/ss_config.local
 
 # 唤醒后恢复 WiFi（阶段2 深睡后必需）。返回 0=已连通。
-# 背景：5.16.x 设备 suspend 后 WiFi 断且 suspended 态无法程序重连；
-#   koreader-live-sleepscreen（FW5.18.6 实测）+ fanzhh/kindle-calendar-weather（5.11.1.1，8/8 成功）
-#   均证实：需主动重连。i.MX 老设备（咱 Kindle 8 属此类）静默手段即够，新 MediaTek 才需 dance。
+# 背景：5.16.x 设备 suspend 后 WiFi 断且 suspended 态无法静默重连
+#   （koreader-live-sleepscreen FW5.18.6 实测：所有静默手段全失败）。
+# 【2026-11-06 真机修正】fanzhh 在 5.11.1.1 上「静默 8/8 成功」不能外推到 5.16.x：
+#   咱 Kindle 8 虽是 i.MX，静默仍失败（00:00 不更新），必须 toggleSuspend dance（01:00 才通）。
+#   故保留静默仅作 15s 快速试探，主力是 dance。
 wifi_restore() {
     ST=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)
     [ "$ST" = "CONNECTED" ] && return 0
     log "wifi_restore: 当前 $ST，开始重连"
     lipc-set-prop com.lab126.cmd wirelessEnable 1 2>/dev/null
     lipc-set-prop com.lab126.wifid enable 1 2>/dev/null
-    I=0; MAX=${SS_WIFI_RESTORE_T:-150}
+    # dance 开时静默只快速试探 SS_WIFI_SILENT_T 秒即转 dance（省电）；
+    # 纯静默模式仍用完整 SS_WIFI_RESTORE_T 预算。
+    I=0
+    if [ "${SS_WIFI_DANCE:-1}" = "1" ]; then
+        MAX=${SS_WIFI_SILENT_T:-15}
+    else
+        MAX=${SS_WIFI_RESTORE_T:-150}
+    fi
     while [ "$I" -lt "$MAX" ]; do
         ST=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)
         [ "$ST" = "CONNECTED" ] && { log "wifi_restore: 静默重连成功(${I}s)"; return 0; }
@@ -90,8 +105,8 @@ wifi_restore() {
         sleep 5
         I=$(( I + 5 ))
     done
-    if [ "${SS_WIFI_DANCE:-0}" = "1" ]; then
-        log "wifi_restore: 静默失败，尝试 toggleSuspend 模拟电源键"
+    if [ "${SS_WIFI_DANCE:-1}" = "1" ]; then
+        log "wifi_restore: 静默试探未成，尝试 toggleSuspend 模拟电源键"
         lipc-send-event com.lab126.powerd toggleSuspend 2>/dev/null
         I=0
         while [ "$I" -lt 30 ]; do
