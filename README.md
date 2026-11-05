@@ -90,13 +90,33 @@ python3 render.py dash.png
 - KUAL「**11 阶段2深睡:关(回阶段1)**」→ 写 `SS_RTC=0` → 退回阶段1 兜底
   （续航 1–2 天，但每小时仍自动换图，功能不丢）。
 
+### 阶段2 的真机坑：深睡后 WiFi 断、suspended 态无法自动重连（已修）
+
+**23:00 实测现象**：阶段2 开启后，整点没有自动换图，画面一直停在 22:00。
+**根因**（经多篇文章交叉验证，非 linkss 吞事件）：
+固件 **5.16.x 在 suspend 时会切断 WiFi**，且 suspended 状态下框架**拒绝任何层级的 WiFi 关联**
+（`com.lab126.wifid enable` / `ensureConnection` / `wpa_cli reassociate` / `udhcpc` 全失败）。
+RTC 确实唤醒了设备，但此时 WiFi 是断的 → 取不到图 → 旧画面滞留。
+手动按电源键能恢复，正是因为物理按键把框架踢回 active 态，WiFi 才重新关联。
+
+**修复**（已在 `ss_config.sh` 实现 `wifi_restore()`，并在调度器 / 取图脚本里调用）：
+- 唤醒后主动重连：先 `wirelessEnable 1` + `wifid enable 1`，再按 `SS_WIFI_RESTORE_T`（默认 **150s**）
+  预算循环 `ensureConnection` + `udhcpc` 兜底 DHCP，连上即返回。Kindle 8 是 **i.MX** 老平台，
+  静默手段一般够用（`fanzhh` 在 5.11.1.1 上 8/8 成功，典型 15–30s 内连上，150s 预算是安全冗余）。
+- 兜底「模拟电源键」dance：若静默重连仍失败，在 `ss_config.local` 写 `SS_WIFI_DANCE=1` 即启用
+  `lipc-send-event ... toggleSuspend` —— 强制 active 约 3s 让 WiFi 连通、取图刷屏后再休眠
+  （每次唤醒多约 10s active，仍远优于常亮）。该命令在不同固件命名未必一致，故默认关，按需开。
+- 防中途挂起：调度器在 `wakeupFromSuspend` 里先 `deferSuspend 180`，防止更新途中被 powerd
+  重新挂起而漏掉下一次 `readyToSuspend`（那会导致 `rtcWakeup` 没设上、后续不再唤醒）。
+
 ### 已知未知数（阶段2）
 
-阶段2 依赖固件 **5.16.2.1.1 + linkss** 接管休眠后，powerd 仍会：
-① 发出 `readyToSuspend` 事件、② 按 `rtcWakeup` 真正把设备从深睡叫醒、
-③ 唤醒瞬间 `eips` 能正确重绘屏保 —— 这三步此前**未在真机验证**。
+阶段2 在固件 **5.16.2.1.1 + linkss** 接管休眠下，**以下仍是真机变量**（WiFi 重连已用上面
+`wifi_restore` 兜底，不在此列）：
+① `readyToSuspend` 事件是否照常发出、② `rtcWakeup` 是否真把设备从深睡叫醒、
+③ 唤醒瞬间 `eips` 能否正确重绘屏保（部分固件在唤醒瞬间刷屏会残影）。
 `fanzhh/kindle-calendar-weather` 与 `KindleCron` 在 5.11 / 原生 powerd 上已验证该模式可行。
-若真机不成立，退回阶段1 即可，不影响"每小时自动换图"这一核心功能。
+若真机不成立（如整点不唤醒），退回阶段1 即可，不影响"每小时自动换图"这一核心功能。
 
 ### 关键文件（设备侧）
 
