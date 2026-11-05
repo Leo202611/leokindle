@@ -63,8 +63,9 @@ SS_RTC=1
 # 5.16.x 休眠后 WiFi 在 suspended 态无法程序重连（koreader 5.18.6 / fanzhh 均已确认）。
 # 纯静默模式的总预算（秒）；fanzhh 实测需给到 ~150s 才稳（15s/30s 两段偶发失败）。
 SS_WIFI_RESTORE_T="${SS_WIFI_RESTORE_T:-150}"
-# dance 开启时，静默只做这么久的快速试探就转 dance。本固件实测静默基本连不上，
-# 白等 150s 会让每次唤醒多 active 两分半（24 次/天 ≈ 1h/天），直接拖垮周级续航。
+# dance 开启时，静默只做这么久的快速试探就转 dance，缩短每次唤醒、降低失败尾部风险。
+# 注：2026-11-06 过夜实测旧版 150s 空等仍 6.8h 仅掉 2%（≈7.1%/天），
+# 说明等待态并非全功率 active；此优化是"更利落"，并非续航成败的关键。
 SS_WIFI_SILENT_T="${SS_WIFI_SILENT_T:-15}"
 # 「模拟电源键」dance：toggleSuspend 强制 active 后 WiFi 约 3s 连通。
 # 【2026-11-06 真机验证】Kindle 8 / 5.16.2.1.1 + linkss：
