@@ -33,7 +33,7 @@ https://raw.githubusercontent.com/<用户名>/<仓库名>/dash/dash.png
 
 ```sh
 pip install -r requirements.txt
-python3 locate.py --city 泰州 --region 江苏   # 生成 location.json
+python3 locate.py --city --region    # 生成 location.json
 python3 render.py dash.png
 ```
 
