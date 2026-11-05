@@ -55,8 +55,11 @@ python3 render.py dash.png
 
 | 模式 | 开关 | 行为 | 续航 | 风险 |
 |---|---|---|---|---|
-| 阶段1（默认） | `SS_RTC=0` | 后台常驻 + `deferSuspend` 轻眠，每整点自动换图 | 约 1–2 天 | 低，功能稳 |
-| 阶段2 | `SS_RTC=1` | 监听 `readyToSuspend`→`rtcWakeup` 设闹钟→关 WiFi→**真·深睡**；整点唤醒取图刷屏再睡 | 目标不接电源撑一周 | 见下方"已知未知数" |
+| 阶段1（回退兜底） | `SS_RTC=0` | 后台常驻 + `deferSuspend` 轻眠，每整点自动换图 | 约 1–2 天 | 低，功能稳 |
+| 阶段2（**现默认**） | `SS_RTC=1` | 监听 `readyToSuspend`→`rtcWakeup` 设闹钟→关 WiFi→**真·深睡**；整点唤醒取图刷屏再睡 | 目标不接电源撑一周 | 见下方"已知未知数" |
+
+> **2026-11-05 起 `SS_RTC` 默认改为 `1`**：新部署直接走阶段2。若真机实测整点不更新/不唤醒，
+> KUAL「**11 阶段2深睡:关**」即退回阶段1（每小时仍自动换图，续航 1–2 天）。
 
 更新频率由 `SS_HOURS` 控制（默认 `0 1 2 … 23` 即每小时；想更省电可改成 `0 6 9 12 15 18` 等，写在 `ss_config.local` 即可）。
 
@@ -67,11 +70,13 @@ python3 render.py dash.png
 1. **5 在线更新(WiFi) - 拉新菜单** — 从 GitHub 拉最新脚本 + 菜单
    （设备连不上 Mac 本地服务时会有约 3 秒超时，随后自动回退 GitHub，属正常）
 2. **3 停用定时更新**
-3. **1 启用定时更新(每整点)** — 以阶段1 启动
-4. **10 阶段2深睡:开(RTC省电)** — 在 `/mnt/us/dash/ss_config.local` 写入 `SS_RTC=1` 并重启调度器 → 进入阶段2
+3. **1 启用定时更新(每整点)** — 新部署默认即以阶段2（深睡）启动
+4. （可选）**12 阶段2 WiFi dance:开(兜底重连)** — 若真机实测唤醒后 WiFi 静默重连失败，
+   在 `/mnt/us/dash/ss_config.local` 写入 `SS_WIFI_DANCE=1` 并重启调度器 → 改用
+   `toggleSuspend` 模拟电源键强制重连。多数 i.MX 设备（咱 Kindle 8）静默手段即可，无需开启。
 
-> `SS_RTC` 写在 `ss_config.local`（deploy 不会覆盖它），是用户侧安全持久开关；
-> 想退回阶段1 只需把它改成 `0` 再重启，见下方回退。
+> `SS_RTC` / `SS_WIFI_DANCE` 都写在 `ss_config.local`（deploy 不会覆盖它），是用户侧安全持久开关；
+> 想退回阶段1 只需把 `SS_RTC` 改成 `0` 再重启，见下方回退。
 
 ### 阶段2 验收清单（在真机验证）
 
@@ -89,6 +94,7 @@ python3 render.py dash.png
 
 - KUAL「**11 阶段2深睡:关(回阶段1)**」→ 写 `SS_RTC=0` → 退回阶段1 兜底
   （续航 1–2 天，但每小时仍自动换图，功能不丢）。
+- 若此前开过「12 WiFi dance」，可 KUAL「**13 阶段2 WiFi dance:关**」关掉兜底（纯静默重连）。
 
 ### 阶段2 的真机坑：深睡后 WiFi 断、suspended 态无法自动重连（已修）
 
@@ -126,4 +132,4 @@ RTC 确实唤醒了设备，但此时 WiFi 是断的 → 取不到图 → 旧画
 | `ss_scheduler.sh` | 调度器，`SS_RTC` 决定走阶段1/阶段2 主循环 |
 | `ss_update_once.sh` | 单次取图 + `eips` 刷屏（含 MD5 跳过重刷） |
 | `ss_enable.sh` / `ss_disable.sh` | upstart 启停（拷入 tmpfs 再 exec，防持 `/mnt/us` 句柄损坏 FAT） |
-| `ss_rtc.sh` | KUAL「10/11」调用，读写 `ss_config.local` 的 `SS_RTC` |
+| `ss_rtc.sh` / `ss_dance.sh` | KUAL「10/11」切 `SS_RTC`、「12/13」切 `SS_WIFI_DANCE`，都写 `ss_config.local` 并重启调度器 |

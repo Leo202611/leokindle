@@ -52,11 +52,12 @@ SS_CURL_T=20
 SS_WIFI_WAIT=20
 SS_UPDATE_TIMEOUT=60
 # 阶段2 开关：1=启用 RTC 真深睡（监听 powerd 事件、readyToSuspend 里设 rtcWakeup、
-# 唤醒后取图刷屏再睡，目标不接电源撑一周）；0=阶段1 轻休眠（默认，续航 1–2 天）。
-# 启用方式：在 /mnt/us/dash/ss_config.local 写一行 SS_RTC=1（deploy 不覆盖 local），
-# 再 KUAL「在线更新→停用→启用」即生效。真机未知数：5.16.2.1.1+linkss 下 powerd
-# 事件是否照常触发、rtcWakeup 是否真唤醒；若整点不更新/不唤醒，改回 SS_RTC=0 即退回阶段1。
-SS_RTC=0
+# 唤醒后取图刷屏再睡，目标不接电源撑一周）；0=阶段1 轻休眠（回退兜底，续航 1–2 天）。
+# 【2026-11-05 默认改为 1】新部署默认走阶段2 深睡；若真机实测整点不更新/不唤醒，
+# 在 /mnt/us/dash/ss_config.local 写 SS_RTC=0 并 KUAL「在线更新→停用→启用」，或点
+# KUAL「11 阶段2深睡:关」即退回阶段1（每小时仍自动换图，续航 1–2 天）。
+# 注：ss_config.local 里的 SS_RTC 会覆盖本默认值（deploy 不覆盖 local）。
+SS_RTC=1
 
 # 唤醒后 WiFi 恢复（阶段2 深睡后必需）：
 # 5.16.x 休眠后 WiFi 在 suspended 态无法程序重连（koreader 5.18.6 / fanzhh 均已确认）。
