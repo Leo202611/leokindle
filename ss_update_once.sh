@@ -94,21 +94,19 @@ case " $SS_HOURS " in *" $HH "*) FN=$(printf 'ss_%02d.png' "$HH") ;; esac
 [ -n "$FN" ] || FN="ss_latest.png"
 log "本地 $HH 时，目标图: ${FN}（更新点: ${SS_HOURS}）"
 
-# ---- 2. 按需开 WiFi（连不上立刻放弃，绝不空等） ----
+# ---- 2. 按需开 / 恢复 WiFi ----
+# 阶段2 深睡唤醒后 WiFi 处于断连态，必须主动重连（5.16.x suspended 态无法自动重连，
+# koreader-live-sleepscreen / fanzhh 均已证实）；wifi_restore() 见 ss_config.sh。
+# 已连一般秒回；断连时按 SS_WIFI_RESTORE_T(默认150s) 预算重试，仍失败则跳过下载、不空等。
 WIFI_WAS=1
 W=$(lipc-get-prop com.lab126.cmd wirelessEnable 2>/dev/null)
 [ "$W" = "0" ] && WIFI_WAS=0
-ST=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)
-log "WiFi: enable=$W cmState=$ST"
-if [ "$ST" != "CONNECTED" ]; then
-    lipc-set-prop com.lab126.cmd wirelessEnable 1 2>/dev/null
-    I=0
-    while [ "$I" -lt $(( SS_WIFI_WAIT / 2 )) ]; do
-        ST=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)
-        [ "$ST" = "CONNECTED" ] && break
-        sleep 2
-        I=$(( I + 1 ))
-    done
+if wifi_restore; then
+    ST=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)
+    log "WiFi 已就绪（enable=$W cmState=$ST）"
+else
+    ST=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)
+    log "WiFi 无法恢复（cmState=$ST），本次更新将跳过下载"
 fi
 log "下载前 cmState=$ST"
 

@@ -158,10 +158,16 @@ phase2_loop() {
                 log "设唤醒闹钟并关 WiFi，进入深睡"
                 ;;
             *wakeupFromSuspend*)
-                # 被 RTC 唤醒：开 WiFi -> 取图 -> 刷屏；之后框架自动重新休眠
-                log "RTC 唤醒，开始取图"
-                lipc-set-prop com.lab126.cmd wirelessEnable 1 2>/dev/null
-                do_update
+                # 被 RTC 唤醒：恢复 WiFi -> 取图 -> 刷屏；之后框架自动重新休眠
+                # 先 deferSuspend 一段时间，防止更新途中被 powerd 重新挂起而漏掉
+                # 下一次 readyToSuspend（那会导致 rtcWakeup 没设上、后续不再唤醒）。
+                lipc-set-prop -i com.lab126.powerd deferSuspend 180 2>/dev/null
+                log "RTC 唤醒，开始恢复 WiFi 并取图"
+                if wifi_restore; then
+                    do_update
+                else
+                    log "RTC 唤醒但 WiFi 未恢复，跳过本次更新（等下个整点）"
+                fi
                 ;;
             *goingToScreenSaver*)
                 # 进入屏保（如手动按电源，非 RTC 唤醒）：确保下次休眠带唤醒闹钟

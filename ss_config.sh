@@ -58,4 +58,48 @@ SS_UPDATE_TIMEOUT=60
 # 事件是否照常触发、rtcWakeup 是否真唤醒；若整点不更新/不唤醒，改回 SS_RTC=0 即退回阶段1。
 SS_RTC=0
 
+# 唤醒后 WiFi 恢复（阶段2 深睡后必需）：
+# 5.16.x 休眠后 WiFi 在 suspended 态无法程序重连（koreader 5.18.6 / fanzhh 均已确认）。
+# 静默重连总预算（秒）；fanzhh 实测需给到 ~150s 才稳（15s/30s 两段偶发失败）。
+SS_WIFI_RESTORE_T="${SS_WIFI_RESTORE_T:-150}"
+# 「模拟电源键」dance 兜底（koreader 5.18.6 验证：强制 active 后 WiFi 约 3s 连通）。
+# 默认关——该 lipc 命令在不同固件命名未必一致；静默重连仍失败时，在 ss_config.local
+# 写 SS_WIFI_DANCE=1 再测。开启后每次唤醒多约 10s active，仍远优于常亮。
+SS_WIFI_DANCE="${SS_WIFI_DANCE:-0}"
+
 [ -f /mnt/us/dash/ss_config.local ] && . /mnt/us/dash/ss_config.local
+
+# 唤醒后恢复 WiFi（阶段2 深睡后必需）。返回 0=已连通。
+# 背景：5.16.x 设备 suspend 后 WiFi 断且 suspended 态无法程序重连；
+#   koreader-live-sleepscreen（FW5.18.6 实测）+ fanzhh/kindle-calendar-weather（5.11.1.1，8/8 成功）
+#   均证实：需主动重连。i.MX 老设备（咱 Kindle 8 属此类）静默手段即够，新 MediaTek 才需 dance。
+wifi_restore() {
+    ST=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)
+    [ "$ST" = "CONNECTED" ] && return 0
+    log "wifi_restore: 当前 $ST，开始重连"
+    lipc-set-prop com.lab126.cmd wirelessEnable 1 2>/dev/null
+    lipc-set-prop com.lab126.wifid enable 1 2>/dev/null
+    I=0; MAX=${SS_WIFI_RESTORE_T:-150}
+    while [ "$I" -lt "$MAX" ]; do
+        ST=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)
+        [ "$ST" = "CONNECTED" ] && { log "wifi_restore: 静默重连成功(${I}s)"; return 0; }
+        # 主动触发一次关联 + 兜底 DHCP
+        lipc-send-event com.lab126.cmd ensureConnection "wifi:" 2>/dev/null
+        /sbin/udhcpc -n -q 2>/dev/null
+        sleep 5
+        I=$(( I + 5 ))
+    done
+    if [ "${SS_WIFI_DANCE:-0}" = "1" ]; then
+        log "wifi_restore: 静默失败，尝试 toggleSuspend 模拟电源键"
+        lipc-send-event com.lab126.powerd toggleSuspend 2>/dev/null
+        I=0
+        while [ "$I" -lt 30 ]; do
+            ST=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)
+            [ "$ST" = "CONNECTED" ] && { log "wifi_restore: dance 后连通(${I}s)"; return 0; }
+            sleep 3
+            I=$(( I + 3 ))
+        done
+    fi
+    log "wifi_restore: 失败（WiFi 仍 $ST）"
+    return 1
+}
