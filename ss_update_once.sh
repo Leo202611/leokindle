@@ -162,13 +162,26 @@ rm -f "$IDX"
 
 # ---- 4. 落盘 + 刷屏 ----
 if [ "$GOT" = "1" ]; then
+    # 省电：新图与上次显示内容逐字节相同则跳过 eips 整屏刷新（每小时图不同，极少触发）。
+    # 仍照常更新落盘文件，保证链接/缓存一致；eips 整屏刷新才是主要耗电项。
+    SKIP_EIPS=0
+    if [ -f "$SS_DST_DIR/ss_current.png" ] && cmp -s "$TMP" "$SS_DST_DIR/ss_current.png"; then
+        log "内容未变（与上次相同），跳过 eips 整屏刷新"
+        SKIP_EIPS=1
+    fi
     # 先画到帧缓冲：设备已经处于休眠/屏保时，linkss 只在「进入屏保」那一刻读文件，
     # 光换文件不刷屏，用户看到的仍是旧图（这正是之前 12:00 图一直挂着的原因之一）。
     PSTAT=$(lipc-get-prop com.lab126.powerd status 2>/dev/null)
     case "$PSTAT" in
         *Active*) log "GUI 活跃，跳过 eips（按电源键休眠即显示新图）" ;;
-        *)        eips -f -g "$TMP" >> "$SS_LOG" 2>&1
-                  log "已刷屏 eips -f -g（仅一次整屏刷新）" ;;
+        *)
+            if [ "$SKIP_EIPS" = "1" ]; then
+                log "内容未变，跳过 eips 整屏刷新（仅更新文件）"
+            else
+                eips -f -g "$TMP" >> "$SS_LOG" 2>&1
+                log "已刷屏 eips -f -g（仅一次整屏刷新）"
+            fi
+            ;;
     esac
 
     # 缓存一份到 dash 目录，供「设为屏保」与下次开机使用。
