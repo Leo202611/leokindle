@@ -38,10 +38,10 @@
 #   /mnt/us/extensions/dash/bin/*.sh   KUAL 入口（由上面拷贝）
 #   /mnt/us/extensions/dash/menu.json  菜单（本地生成，不依赖设备上任何遗留文件）
 #
-# 【2026-11-04 19:48 主线切换】用户定案：待机画面每天 6/9/12/15/18 共 5 次更新，
+# 【2026-11-05 更新】用户定案：待机画面每小时（0–23 共 24 次）更新，
 # 设备真正休眠（RTC 唤醒），不再跑常亮仪表盘守护进程。两组菜单互斥，
 # 启用屏保定时更新会自动停掉 dashd，否则 keep_awake 会让屏保永远不出现。
-# 云端对应产物是 dash 分支的固定槽位图 ss_06/09/12/15/18.png + ss_latest.png。
+# 云端对应产物是 dash 分支的固定槽位图 ss_00..ss_23.png + ss_latest.png。
 #
 # 电量链路当前默认停用（2026-11-04 12:37 用户要求省电）：
 #   dashd_v5.sh 的 BATT_REPORT=0 → 不读电量、不 POST、也不做 :35 跟进取图；
@@ -64,7 +64,7 @@ say() {
 }
 
 # 脚本类文件：必须全部经 WiFi 下发，一个都不能依赖 USB 预置
-# ss_*.sh 是「待机画面定时更新」(6/9/12/15/18)：RTC 唤醒 + 单次换图 + 重新休眠，
+# ss_*.sh 是「待机画面定时更新」(每整点)：RTC 唤醒 + 单次换图 + 重新休眠，
 # 取代常亮仪表盘守护进程成为主线。ss_config.local 若存在则绝不覆盖（本地改频率用）。
 SH_FILES="dashd_v5.sh dash_on_v5.sh dash_on_land.sh dash_on_port.sh dash_off.sh dash_update.sh install_screensaver.sh ss_config.sh ss_update_once.sh ss_scheduler.sh ss_enable.sh ss_disable.sh"
 # 其中需要装进 KUAL bin/ 的入口
@@ -265,7 +265,7 @@ cat > "$MENU.new" <<'JSON'
 			"priority": 1,
 			"items": [
 				{
-					"name": "1 启用定时更新(6/9/12/15/18)",
+					"name": "1 启用定时更新(每整点)",
 					"action": "bin/ss_enable.sh",
 					"exitmenu": true
 				},
@@ -360,7 +360,7 @@ fi
 # 点一次就把屏保定时链路装好并拉起；菜单更新后用户再打开即可看到新项。
 # 不想自动启用：在设备上建一个空文件 /mnt/us/dash/ss_no_auto 即可。
 if [ -z "$BOOT" ] && [ -f "$DST/ss_enable.sh" ] && [ ! -f "$DST/ss_no_auto" ]; then
-    say "---- 自动启用待机画面定时更新(6/9/12/15/18) ----"
+    say "---- 自动启用待机画面定时更新(每整点) ----"
     sh "$EXT/bin/ss_enable.sh" quick >> "$LOG" 2>&1
     if [ -f "$DST/ss_enabled" ]; then
         say "OK 已自动启用（服务 dashss）；想取消自动启用可建 $DST/ss_no_auto"

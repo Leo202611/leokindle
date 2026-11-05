@@ -30,5 +30,5 @@ rm -rf /tmp/dashss /tmp/dashss.conf 2>/dev/null
 echo "$(date +'%m-%d %H:%M:%S') 手动停用" > "$D/ss_no_auto"
 say "已写 ss_no_auto：之后点「在线更新(WiFi)」只装文件，不会自动重启服务"
 say "完成。此后不再自动唤醒；屏保仍显示最后一次的图片（静态，零耗电）"
-say "想恢复自动更新：手动点菜单第 1 项「启用定时更新(6/9/12/15/18)」"
+say "想恢复自动更新：手动点菜单第 1 项「启用定时更新(每整点)」"
 exit 0
