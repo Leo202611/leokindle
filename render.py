@@ -544,7 +544,9 @@ def draw_curve(d, data, at, x0, y0, w, h):
         if tx - last_tx < 34:
             continue
         last_tx = tx
-        ty = py(vals[k]) - 20
+        # 低温点贴着 bot，标注若照 py-20 画会压到下面的小时刻度行；
+        # 统一把标注上抬到 bot-30 以内，保证与刻度至少留一段白。
+        ty = max(top - 20, min(py(vals[k]) - 20, bot - 30))
         d.rectangle([tx - 2, ty - 2, tx + tw + 2, ty + 18], fill=WHITE)
         d.text((tx, ty), t, font=f_t, fill=BLACK)
 
@@ -563,6 +565,18 @@ def draw_curve(d, data, at, x0, y0, w, h):
             tomorrow_marked = True
         tw = d.textlength(t, font=f_h)
         d.text((px(k) - tw / 2, bot + 3), t, font=f_h, fill=GRAY)
+
+    # 粒度标签：明确这是「未来 N 小时 · 逐时」，与下方「明天/后天」逐日摘要
+    # 属于不同分辨率，避免被误读成同一条时间轴、进而觉得「天数对不上」。
+    # 放在曲线区顶部居中——那里是夜间低温段上方的空白带，避开左右两端的
+    # 首/末温度标注；白底衬保证万一中段出现高温标注也不会糊在一起。
+    f_lab = font(FONT_REG, 14)
+    lab = "未来 %d 小时 · 逐时气温" % CURVE_HOURS
+    lw = d.textlength(lab, font=f_lab)
+    lx = x0 + (w - lw) / 2.0
+    ly = y0 + 2
+    d.rectangle([lx - 4, ly - 2, lx + lw + 4, ly + 18], fill=WHITE)
+    d.text((lx, ly), lab, font=f_lab, fill=GRAY)
     return True
 
 
