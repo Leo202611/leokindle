@@ -140,6 +140,11 @@ set_rtc_wakeup() {
 phase2_loop() {
     log "===== 阶段2 RTC 深睡模式（SS_RTC=$SS_RTC）====="
     startup_refresh_if_stale
+    # 【兜底·关键】启动时无论如何先设一次下次闹钟。若进程是在设备已处于挂起态时
+    # 被拉起（如 KUAL 在线更新/重启守护），挂起事件不会再次触发，仅靠事件补设会
+    # 留下空窗；这里主动兜底，保证「启动即带闹钟」。
+    set_rtc_wakeup
+    log "启动已兜底设下次唤醒闹钟"
     log "进入事件监听（goingToScreenSaver / readyToSuspend / wakeupFromSuspend）"
     while true; do
         # 阻塞等待下一个 powerd 事件；无事件则不耗电（区别于阶段1 的轮询）
@@ -168,6 +173,17 @@ phase2_loop() {
                 else
                     log "RTC 唤醒但 WiFi 未恢复，跳过本次更新（等下个整点）"
                 fi
+                # 【兜底·关键】无论本次取图成功与否，都在唤醒后主动设下一次闹钟。
+                # 旧逻辑只在 goingToScreenSaver / readyToSuspend 里设闹钟，依赖
+                # 取图后设备重新挂起时补设；一旦那个挂起事件漏触发（或 dance 的
+                # toggleSuspend 让 powerd 误判已挂起、或本窗口进程被重启），下一次
+                # 整点的 rtcWakeup 就成了空窗，设备直接睡死在上一帧，后续整点全不醒
+                # （典型表现：22 点有、23 点没，且跨天 23/00 点反复中招）。
+                # 在唤醒分支主动兜底设一次，使「每小时唤醒→顺手设下个小时」自成闭环，
+                # 与挂起事件的补设互为冗余，单点漏设不再级联。
+                set_rtc_wakeup
+                lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null
+                log "唤醒后已兜底设下次闹钟并关 WiFi"
                 ;;
             *goingToScreenSaver*)
                 # 进入屏保（如手动按电源，非 RTC 唤醒）：确保下次休眠带唤醒闹钟
