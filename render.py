@@ -29,6 +29,12 @@ WL, HL = 800, 600  # 横屏版式尺寸（同一块面板旋转 90° 使用）
 SS_SLOTS = tuple(range(24))   # 每小时一更：0–23 全时段；与设备端 SS_HOURS 保持一致
 TZ = "Asia%2FShanghai"
 
+# 竖屏气温折线覆盖的小时数（含当前整点）。
+# 2026-11-06 用户要求 12 -> 24：12 小时恰好在午夜截断、停在降温段末端，
+# 看上去像"一路降下去"；24 小时能看到次日清晨最低点之后的回升，构成完整昼夜温差循环。
+# 想调回 12（或试 18/36）不必改代码：命令行加 --curve-hours N 即可。
+CURVE_HOURS = 24
+
 # ---------------------------------------------------------------------------
 # eips 字符网格几何
 #
@@ -463,10 +469,13 @@ def draw_icon(d, kind, cx, cy, r, col=BLACK):
 
 
 def draw_curve(d, data, at, x0, y0, w, h):
-    """未来 12 小时气温折线。返回 True 表示画成功（数据不足时返回 False）。
+    """未来 CURVE_HOURS 小时（默认 24）气温折线。返回 True 表示画成功。
 
     区域左上角 (x0,y0)，宽 w 高 h。顶部留 20px 给温度标注，底部留 16px 给小时刻度。
     e-ink 灰度层次少，所以线画粗（3px）、节点画实心圆，避免浅色线条看不清。
+
+    2026-11-06 用户要求 12h -> 24h：24 点横跨一个完整昼夜，能看到次日清晨
+    最低点之后的回升；横轴在跨天处画浅灰虚线并标「明」，避免 23->1 被误读。
     """
     hd = data.get("hourly") or {}
     times = hd.get("time") or []
@@ -476,7 +485,7 @@ def draw_curve(d, data, at, x0, y0, w, h):
         return False
     i0 = times.index(key)
     vals, hrs = [], []
-    for k in range(12):
+    for k in range(CURVE_HOURS):
         i = i0 + k
         if i >= len(temps) or temps[i] is None:
             break
@@ -501,6 +510,23 @@ def draw_curve(d, data, at, x0, y0, w, h):
     def py(v):
         return int(round(bot - (v - lo) / span * (bot - top)))
 
+    # 跨天边界（小时数由 23 回到 0 的位置）：画断续浅灰竖线作视觉分隔。
+    # 若边界恰好落在曲线末点（例如 12h 从 13 点起、末点就是次日 0 点），
+    # 后面没有「次日段」，统一视为无跨天，避免出现无意义的虚线和「明0」标记。
+    day_break = None
+    for k in range(1, n):
+        if hrs[k] < hrs[k - 1]:
+            day_break = k
+            break
+    if day_break is not None and day_break >= n - 1:
+        day_break = None
+    if day_break is not None:
+        xb = px(day_break)
+        yy = top
+        while yy < bot:
+            d.line([(xb, yy), (xb, min(yy + 5, bot))], fill=LGRAY, width=1)
+            yy += 11
+
     for k in range(n - 1):
         d.line([px(k), py(vals[k]), px(k + 1), py(vals[k + 1])], fill=BLACK, width=3)
     for k in range(n):
@@ -508,18 +534,33 @@ def draw_curve(d, data, at, x0, y0, w, h):
         d.ellipse([x - 3, y - 3, x + 3, y + 3], fill=BLACK)
 
     f_t = font(FONT_REG, 16)
-    # 温度只标四处：首、末、最高、最低，避免挤成一团；白底衬保证在线条附近也清晰
+    # 温度只标四处：首、末、最高、最低，避免挤成一团；白底衬保证在线条附近也清晰。
+    # 24 点的点距只有约 23px，相邻标注会重叠，故按 x 排序后跳过过近者。
+    last_tx = -999
     for k in sorted({0, n - 1, vals.index(max(vals)), vals.index(min(vals))}):
         t = "%d°" % round(vals[k])
         tw = d.textlength(t, font=f_t)
         tx = max(x0, min(px(k) - tw / 2, x0 + w - tw))
+        if tx - last_tx < 34:
+            continue
+        last_tx = tx
         ty = py(vals[k]) - 20
         d.rectangle([tx - 2, ty - 2, tx + tw + 2, ty + 18], fill=WHITE)
         d.text((tx, ty), t, font=f_t, fill=BLACK)
 
     f_h = font(FONT_REG, 15)
-    for k in range(0, n, 2):             # 每 2 小时标一个刻度
+    # 24 小时点距约 23px，每 3 小时标一个刻度（8 个）才不挤；
+    # 再补上末点刻度，让「未来 24 小时」的终点有明确时间。
+    ticks = list(range(0, n, 3))
+    if day_break is not None and n - 1 - ticks[-1] >= 2:
+        ticks.append(n - 1)
+    # 跨天后的第一个刻度前加「明」，例如「明1」表示次日 1 点；只加一次。
+    tomorrow_marked = False
+    for k in ticks:
         t = str(hrs[k])
+        if day_break is not None and k >= day_break and not tomorrow_marked:
+            t = "明" + t
+            tomorrow_marked = True
         tw = d.textlength(t, font=f_h)
         d.text((px(k) - tw / 2, bot + 3), t, font=f_h, fill=GRAY)
     return True
@@ -690,7 +731,7 @@ def render(data, out, at=None):
 
     d.line([(M, 412), (RIGHT, 412)], fill=LGRAY, width=2)
 
-    # 中部：未来 12 小时气温曲线（左右各留边距，末点与标注不贴边）
+    # 中部：未来 24 小时（整点）气温曲线（左右各留边距，末点与标注不贴边）
     if not draw_curve(d, data, at, M + 6, 420, W - 2 * (M + 6), 176):
         d.text((M + 6, 500), "（逐小时气温暂不可用）", font=font(FONT_REG, 19), fill=LGRAY)
 
@@ -1016,6 +1057,8 @@ if __name__ == "__main__":
     ap.add_argument("--out", default="dash.png", help="单张输出文件名")
     ap.add_argument("--hours", type=int, default=0,
                     help="批量模式：从当前整点起生成 N 张逐小时图")
+    ap.add_argument("--curve-hours", type=int, default=0,
+                    help="气温折线覆盖的整点数（默认 24；设 12 可回到旧版式）")
     ap.add_argument("--outdir", default=".", help="批量模式输出目录")
     ap.add_argument("--landscape", action="store_true",
                     help="生成横屏版（800x600 画面旋转 90 度后输出 600x800）")
@@ -1026,6 +1069,10 @@ if __name__ == "__main__":
     ap.add_argument("--show-batt", action="store_true",
                     help="在底部状态栏右侧显示电量；默认该位置留白（等价 DASH_SHOW_BATT=1）")
     args = ap.parse_args()
+
+    # 这里是模块顶层（非函数内），直接赋值即可改全局常量
+    if args.curve_hours > 0:
+        CURVE_HOURS = args.curve_hours
 
     if args.batt is not None:
         os.environ["DASH_BATT"] = str(args.batt)
