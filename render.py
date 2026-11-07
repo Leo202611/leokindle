@@ -331,14 +331,17 @@ def current_solar_term_period(d):
 
 _GOLD_CACHE = None
 def fetch_gold_cny():
-    """上海黄金交易所 Au(T+D) 实时价（元/克），取自新浪行情（免 token）。
-    失败或盘中无数据返回 None；成功结果进程内缓存，避免 CI 批量渲染时反复请求。
-    字段下标 [4] = 最新价，已与一支股票的现价下标交叉验证。
+    """上海黄金交易所 Au(T+D) 实时价与昨收（元/克），取自新浪行情（免 token）。
+    返回 (最新价, 昨收)；失败或无数据返回 (None, None)。成功结果进程内缓存，
+    避免 CI 批量渲染时反复请求。
+    字段下标：[4]=最新价（已与一支股票现价下标交叉验证）；[5]=昨收
+    （日内恒定、多次抓取不变，符合昨收特征；夜盘时段 sina 的 [1] 位为 0 占位，
+    真实昨收落在 [5]）。
     """
     global _GOLD_CACHE
     if _GOLD_CACHE is not None:
         return _GOLD_CACHE
-    price = None
+    price = prev = None
     try:
         req = urllib.request.Request(
             "https://hq.sinajs.cn/list=gds_AUTD",
@@ -349,13 +352,17 @@ def fetch_gold_cny():
         parts = body.split('"')
         if len(parts) >= 2:
             f = parts[1].split(",")
-            if len(f) > 4:
+            if len(f) > 5:
                 price = float(f[4])
+                try:
+                    prev = float(f[5])
+                except Exception:
+                    prev = None
     except Exception:
-        price = None
+        price = prev = None
     if price is not None:
-        _GOLD_CACHE = price
-    return price
+        _GOLD_CACHE = (price, prev)
+    return price, prev
 
 
 # 油价已移除（用户 2026-11-07 决定）：发改委约每 10 个工作日才调一次、且分省，
@@ -363,12 +370,24 @@ def fetch_gold_cny():
 # 用「调价窗口」硬编表（参考数据 2026-11-07：江苏 92#8.85 / 95#9.41 / 0#8.55 元/升）。
 
 
-def price_line(d):
-    """底部状态栏右端：实时金价（上海金 Au T+D，抓新浪）。取不到显示 --。
-    油价已移除：发改委约每 10 个工作日才调一次、且分省，屏保上近乎静止、意义不大
-    （用户 2026-11-07 决定；其用车为 95#，与默认 92# 不符，更显无关）。"""
-    g = fetch_gold_cny()
-    return ("金价%.1f元/克" % g) if g is not None else "金价--"
+def draw_gold_price(d, right_x, top_y, d_date):
+    """底部右下端：实时金价 + 较昨日涨跌，两行右对齐（单行太长，故分两行）。
+    line1: 今日金价：873.5 元/克
+    line2: 较昨日：+11.3（+1.30%）
+    取不到金价显示「金价 --」单行；取到金价但取不到昨收则只显示金价行。
+    注：e-ink 为灰度，无法用红/绿区分涨跌，以 +/- 号 + 数值表达。"""
+    g, prev = fetch_gold_cny()
+    if g is None:
+        d.text((right_x, top_y), "金价 --", font=font(FONT_REG, 16), fill=BLACK, anchor="rs")
+        return
+    d.text((right_x, top_y), "今日金价：%.1f 元/克" % g,
+           font=font(FONT_REG, 16), fill=BLACK, anchor="rs")
+    if prev is not None and prev != 0:
+        delta = g - prev
+        pct = delta / prev * 100.0
+        sign = "+" if delta >= 0 else "-"
+        d.text((right_x, top_y + 22), "较昨日：%s%.1f（%s%.2f%%）" % (sign, abs(delta), sign, abs(pct)),
+               font=font(FONT_REG, 16), fill=BLACK, anchor="rs")
 
 
 # ---------- 农历 ----------
@@ -953,10 +972,7 @@ def draw_footer(d, left_x, right_x, at):
         d.text((right_x, BATT_BASE_Y), batt_text(),
                font=font(FONT_REG, FOOTER_FONT_SIZE), fill=BLACK, anchor="rs")
     else:
-        pl = price_line(at.date())
-        if pl:
-            d.text((right_x, BATT_BASE_Y), pl,
-                   font=font(FONT_REG, FOOTER_FONT_SIZE), fill=BLACK, anchor="rs")
+        draw_gold_price(d, right_x, BATT_BASE_Y, at.date())
 
 
 # ---------------------------------------------------------------------------
@@ -1173,10 +1189,7 @@ def render_landscape(data, out, at=None):
         d.text((RIGHT, 560), batt_text(), font=font(FONT_REG, FOOTER_FONT_SIZE),
                fill=BLACK, anchor="ra")
     else:
-        pl = price_line(at.date())
-        if pl:
-            d.text((RIGHT, 560), pl, font=font(FONT_REG, FOOTER_FONT_SIZE),
-                   fill=BLACK, anchor="ra")
+        draw_gold_price(d, RIGHT, 560, at.date())
 
     # 旋转成 600x800。
     # 用 ROTATE_90（逆时针 90 度）：已用 ASCII 标记实测验证过——
