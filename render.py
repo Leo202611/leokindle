@@ -480,21 +480,23 @@ def draw_gold_price(d, right_x, top_y, d_date):
     if g is None:
         d.text((right_x, top_y), "金价 --", font=font(FONT_REG, FOOTER_FONT_SIZE), fill=BLACK, anchor="rs")
         return
+    # 价格与涨跌额一律保留 2 位小数，与上金所官方日行情 / 新浪行情一致
+    # （2026-11-08 用户指出：官方都是小数点后两位，如 868.08、-14.38）。
     if settle is not None and settle != 0:
-        d.text((right_x, top_y - 30), "今日金价：%.1f元/克" % g,
+        d.text((right_x, top_y - 30), "今日金价：%.2f元/克" % g,
                font=font(FONT_REG, FOOTER_FONT_SIZE), fill=BLACK, anchor="rs")
         delta = g - settle
         pct = delta / settle * 100.0
         sign = "+" if delta >= 0 else "-"
-        line = "较昨结算：%s%.1f（%s%.2f%%）" % (sign, abs(delta), sign, abs(pct))
+        line = "较昨结算：%s%.2f（%s%.2f%%）" % (sign, abs(delta), sign, abs(pct))
         # 极端大波动时文案变长，可能挤到中央电量：超过预留宽度就省去百分比，
-        # 只留涨跌额（金价单日 >10% 极罕见，宁可少一字也不撞字）。
-        if d.textlength(line, font=font(FONT_REG, FOOTER_FONT_SIZE)) > 220:
-            line = "较昨结算：%s%.1f" % (sign, abs(delta))
+        # 只留涨跌额。正常 2 位小数文案约 222px，故阈值设 235 留出余量。
+        if d.textlength(line, font=font(FONT_REG, FOOTER_FONT_SIZE)) > 235:
+            line = "较昨结算：%s%.2f" % (sign, abs(delta))
         d.text((right_x, top_y), line,
                font=font(FONT_REG, FOOTER_FONT_SIZE), fill=BLACK, anchor="rs")
     else:
-        d.text((right_x, top_y), "今日金价：%.1f元/克" % g,
+        d.text((right_x, top_y), "今日金价：%.2f元/克" % g,
                font=font(FONT_REG, FOOTER_FONT_SIZE), fill=BLACK, anchor="rs")
 
 
