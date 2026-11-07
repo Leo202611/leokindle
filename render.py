@@ -218,6 +218,15 @@ STM = [0, 21208, 42467, 63836, 85337, 107014, 128867, 150921, 173149, 195551,
 SOLAR = ["小寒", "大寒", "立春", "雨水", "惊蛰", "春分", "清明", "谷雨", "立夏", "小满",
          "芒种", "夏至", "小暑", "大暑", "立秋", "处暑", "白露", "秋分", "寒露", "霜降",
          "立冬", "小雪", "大雪", "冬至"]
+# 各节气当天在问候语后追加的短句（彩蛋）：仅该节气当天出现，其余日子不显示。
+TERM_PHRASE = {
+    "小寒": "防寒保暖", "大寒": "岁末将尽", "立春": "万物始生", "雨水": "润物无声",
+    "惊蛰": "春雷始鸣", "春分": "昼夜均分", "清明": "踏青追思", "谷雨": "雨生百谷",
+    "立夏": "万物并秀", "小满": "麦粒渐盈", "芒种": "忙种当时", "夏至": "昼长夜短",
+    "小暑": "温风渐至", "大暑": "静心消暑", "立秋": "凉风渐起", "处暑": "暑气渐消",
+    "白露": "露凝而白", "秋分": "丹桂飘香", "寒露": "露寒将凝", "霜降": "霜染层林",
+    "立冬": "添衣保暖", "小雪": "初雪轻盈", "大雪": "瑞雪兆丰", "冬至": "数九寒天",
+}
 # 各节气的太阳视黄经（小寒 285°，每过一个节气 +15°）
 _STM_LON = [(285.0 + 15.0 * i) % 360.0 for i in range(24)]
 
@@ -591,20 +600,28 @@ def compass(deg):
     return names[int((deg + 22.5) % 360 // 45)]
 
 
-def greeting(h):
+def greeting(h, term=""):
     # 整句问候按「时段」给出不同祝福，而非只换时段词、后缀恒为"祝你今天顺利"。
     # 深夜避免说"今天"（已是次日），改为"明天见"更自然。
+    # term：若当天是二十四节气之一（由 solar_term_of 给出名），则在其后追加一句
+    # 应景短句（见 TERM_PHRASE），仅该节气当天出现，其余日子不显示。
     if 5 <= h < 9:
-        return "早上好，新的一天元气满满"
-    if 9 <= h < 12:
-        return "上午好，做事从容些"
-    if 12 <= h < 14:
-        return "中午好，记得好好吃饭"
-    if 14 <= h < 18:
-        return "下午好，忙里偷闲喝口水"
-    if 18 <= h < 23:
-        return "晚上好，今天辛苦啦"
-    return "夜深了，早点休息，明天见"
+        base = "早上好，新的一天元气满满"
+    elif 9 <= h < 12:
+        base = "上午好，做事从容些"
+    elif 12 <= h < 14:
+        base = "中午好，记得好好吃饭"
+    elif 14 <= h < 18:
+        base = "下午好，忙里偷闲喝口水"
+    elif 18 <= h < 23:
+        base = "晚上好，今天辛苦啦"
+    else:
+        base = "夜深了，早点休息，明天见"
+    if term:
+        ph = TERM_PHRASE.get(term)
+        if ph:
+            return base + " · 今日" + term + "，" + ph
+    return base
 
 
 # ---------- 取数据 ----------
@@ -678,7 +695,7 @@ def render(data, out, at=None):
     # 时钟已移除：本仪表盘每小时才刷新一次，显示分钟级时钟没有意义；
     # 改为几乎不变的干支纪年与生肖，次年生肖随春节自动更替。
     d.text((M, 22), city_label(), font=font(FONT_BOLD, 30), fill=BLACK)
-    d.text((M + 2, 60), greeting(at.hour), font=font(FONT_REG, 20), fill=GRAY)
+    d.text((M + 2, 60), greeting(at.hour, solar_term_of(at.date())), font=font(FONT_REG, 20), fill=GRAY)
     gz, sheng, gz_year = ganzhi_of(at.date())
     f_gz = font(FONT_BOLD, 40)
     gw = d.textlength(gz, font=f_gz)
@@ -979,7 +996,7 @@ def render_landscape(data, out, at=None):
 
     # 顶栏：城市 + 问候 | 干支 + 生肖
     d.text((M, 12), city_label(), font=font(FONT_BOLD, 28), fill=BLACK)
-    d.text((M + 2, 46), greeting(at.hour), font=font(FONT_REG, 19), fill=GRAY)
+    d.text((M + 2, 46), greeting(at.hour, solar_term_of(at.date())), font=font(FONT_REG, 19), fill=GRAY)
     gz, sheng, gz_year = ganzhi_of(at.date())
     f_gz = font(FONT_BOLD, 36)
     gw = d.textlength(gz, font=f_gz)
