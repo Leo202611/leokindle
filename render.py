@@ -384,6 +384,9 @@ def poem_for(at):
     - 同一天内所有整点渲染完全一致（按 date 计算，与 hour 无关），
       因为屏保每小时更新但诗句是「每天不同样」。
     - 例：立冬十月节首日「霜降向人寒，轻冰渌水漫」，次日「蟾将纤影出，雁带几行残」。
+    - 标题只返回节气名（如「立冬」）：作者「元稹」、集合名「咏廿四气诗」、书名号
+      都是 24 首共用的固定信息（用户 2026-11-07 定：每首都显示就没必要显示），
+      省掉后正好与右侧「丙午」同为 2 字 40px，左右严格对称。
     """
     d = at.date()
     term, start = current_solar_term_info(d)
@@ -391,7 +394,7 @@ def poem_for(at):
     if not couplets:
         return "", ""
     a, b = couplets[(d - start).days % 4]
-    return "元稹《咏廿四气诗·%s》" % term, a + "，" + b
+    return term, a + "，" + b
 
 
 _GOLD_CACHE = None
@@ -872,18 +875,19 @@ def render(data, out, at=None):
     # 顶部：城市 + 问候语 | 干支纪年 + 生肖
     # 时钟已移除：本仪表盘每小时才刷新一次，显示分钟级时钟没有意义；
     # 改为几乎不变的干支纪年与生肖，次年生肖随春节自动更替。
-    # 顶部左上：主标题=诗歌名，副标题=当日一联两句诗。
-    # 按公历日序轮换该首 4 联，每天不同样；诗随当前节气时段更换。
-    # 字号受控(20/19)，只占页眉两行、不压下方 y=98 的横线。
+    # 页眉左右严格对称（2026-11-07 用户定案）：
+    #   主行：左上节气名 与 右上干支 —— 同为 2 字、同字号 40、同纯黑、同一水平线 y=14
+    #   次行：左下诗句 与 右下生肖 —— 同字号 22、同灰度、同一水平线 y=62
+    #   （作者/集合名/书名号均为 24 首共用固定信息，已省略不显示）
     poem_title, poem_line = poem_for(at)
-    d.text((M, 22), poem_title, font=font(FONT_BOLD, 20), fill=BLACK)
-    d.text((M, 54), poem_line, font=font(FONT_REG, 19), fill=BLACK)
     gz, sheng, gz_year = ganzhi_of(at.date())
     f_gz = font(FONT_BOLD, 40)
-    gw = d.textlength(gz, font=f_gz)
-    d.text((RIGHT - gw, 14), gz, font=f_gz, fill=BLACK)
-    d.text((RIGHT - d.textlength(sheng + "年", font=font(FONT_REG, 22)), 62),
-           sheng + "年", font=font(FONT_REG, 22), fill=GRAY)
+    f_sub = font(FONT_REG, 22)
+    d.text((M, 14), poem_title, font=f_gz, fill=BLACK)
+    d.text((RIGHT - d.textlength(gz, font=f_gz), 14), gz, font=f_gz, fill=BLACK)
+    d.text((M, 62), poem_line, font=f_sub, fill=GRAY)
+    d.text((RIGHT - d.textlength(sheng + "年", font=f_sub), 62),
+           sheng + "年", font=f_sub, fill=GRAY)
     d.line([(M, 98), (RIGHT, 98)], fill=LGRAY, width=2)
 
     # 左：当前天气
@@ -1180,16 +1184,18 @@ def render_landscape(data, out, at=None):
     RIGHT = LW - M
 
     # 顶栏：城市 + 问候 | 干支 + 生肖
-    # 顶栏左上：主标题=诗歌名，副标题=当日一联两句诗（字号受控，不压 y=78 横线）。
+    # 页眉左右严格对称（横屏版，同竖屏规则）：
+    #   主行：左上节气名 与 右上干支 —— 36px / 纯黑 / y=6
+    #   次行：左下诗句 与 右下生肖 —— 20px / 灰度 / y=48
     poem_title, poem_line = poem_for(at)
-    d.text((M, 10), poem_title, font=font(FONT_BOLD, 19), fill=BLACK)
-    d.text((M, 38), poem_line, font=font(FONT_REG, 18), fill=BLACK)
     gz, sheng, gz_year = ganzhi_of(at.date())
     f_gz = font(FONT_BOLD, 36)
-    gw = d.textlength(gz, font=f_gz)
-    d.text((RIGHT - gw, 6), gz, font=f_gz, fill=BLACK)
-    d.text((RIGHT - d.textlength(sheng + "年", font=font(FONT_REG, 20)), 48),
-           sheng + "年", font=font(FONT_REG, 20), fill=GRAY)
+    f_sub = font(FONT_REG, 20)
+    d.text((M, 6), poem_title, font=f_gz, fill=BLACK)
+    d.text((RIGHT - d.textlength(gz, font=f_gz), 6), gz, font=f_gz, fill=BLACK)
+    d.text((M, 48), poem_line, font=f_sub, fill=GRAY)
+    d.text((RIGHT - d.textlength(sheng + "年", font=f_sub), 48),
+           sheng + "年", font=f_sub, fill=GRAY)
     d.line([(M, 78), (RIGHT, 78)], fill=LGRAY, width=2)
 
     # 左栏：当前天气
