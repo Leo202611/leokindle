@@ -592,17 +592,19 @@ def compass(deg):
 
 
 def greeting(h):
+    # 整句问候按「时段」给出不同祝福，而非只换时段词、后缀恒为"祝你今天顺利"。
+    # 深夜避免说"今天"（已是次日），改为"明天见"更自然。
     if 5 <= h < 9:
-        return "早上好"
+        return "早上好，新的一天元气满满"
     if 9 <= h < 12:
-        return "上午好"
+        return "上午好，做事从容些"
     if 12 <= h < 14:
-        return "中午好"
+        return "中午好，记得好好吃饭"
     if 14 <= h < 18:
-        return "下午好"
+        return "下午好，忙里偷闲喝口水"
     if 18 <= h < 23:
-        return "晚上好"
-    return "夜深了"
+        return "晚上好，今天辛苦啦"
+    return "夜深了，早点休息，明天见"
 
 
 # ---------- 取数据 ----------
@@ -676,7 +678,7 @@ def render(data, out, at=None):
     # 时钟已移除：本仪表盘每小时才刷新一次，显示分钟级时钟没有意义；
     # 改为几乎不变的干支纪年与生肖，次年生肖随春节自动更替。
     d.text((M, 22), city_label(), font=font(FONT_BOLD, 30), fill=BLACK)
-    d.text((M + 2, 60), greeting(at.hour) + "，祝你今天顺利", font=font(FONT_REG, 20), fill=GRAY)
+    d.text((M + 2, 60), greeting(at.hour), font=font(FONT_REG, 20), fill=GRAY)
     gz, sheng, gz_year = ganzhi_of(at.date())
     f_gz = font(FONT_BOLD, 40)
     gw = d.textlength(gz, font=f_gz)
@@ -977,7 +979,7 @@ def render_landscape(data, out, at=None):
 
     # 顶栏：城市 + 问候 | 干支 + 生肖
     d.text((M, 12), city_label(), font=font(FONT_BOLD, 28), fill=BLACK)
-    d.text((M + 2, 46), greeting(at.hour) + "，祝你今天顺利", font=font(FONT_REG, 19), fill=GRAY)
+    d.text((M + 2, 46), greeting(at.hour), font=font(FONT_REG, 19), fill=GRAY)
     gz, sheng, gz_year = ganzhi_of(at.date())
     f_gz = font(FONT_BOLD, 36)
     gw = d.textlength(gz, font=f_gz)
