@@ -358,29 +358,17 @@ def fetch_gold_cny():
     return price
 
 
-# 江苏省成品油最高零售价（元/升）。发改委约每 10 个工作日调一次，并非"每日"；
-# 故用「调价窗口」表而非实时抓取（抓取易碎、且分省无干净 JSON）。
-# 数据核实：2026-11-07 多源一致（汽车之家/东方财富/今日油价网）。
-# 下一窗口 2026-11-12 24:00，届时在此追加一行（保留旧行无害）。
-JIANGSU_GAS = [
-    (datetime.date(2026, 11, 3), 8.85, 9.41, 8.55),   # (生效日, 92#, 95#, 0#)
-]
-def jiangsu_gas(d):
-    """返回 (92, 95, 0) 或 None（仅当 d 早于所有生效日）。"""
-    cur = None
-    for eff, a, b, c in JIANGSU_GAS:
-        if d >= eff:
-            cur = (a, b, c)
-    return cur
+# 油价已移除（用户 2026-11-07 决定）：发改委约每 10 个工作日才调一次、且分省，
+# 屏保上近乎静止、意义不大；用户实际加 95#，默认 92# 更显无关。如将来要恢复，
+# 用「调价窗口」硬编表（参考数据 2026-11-07：江苏 92#8.85 / 95#9.41 / 0#8.55 元/升）。
 
 
 def price_line(d):
-    """底部状态栏右端用的「金价 + 江苏油价」短串；任一取不到则显示 --。"""
+    """底部状态栏右端：实时金价（上海金 Au T+D，抓新浪）。取不到显示 --。
+    油价已移除：发改委约每 10 个工作日才调一次、且分省，屏保上近乎静止、意义不大
+    （用户 2026-11-07 决定；其用车为 95#，与默认 92# 不符，更显无关）。"""
     g = fetch_gold_cny()
-    gas = jiangsu_gas(d)
-    gstr = ("金价%.1f元/克" % g) if g is not None else "金价--"
-    ostr = ("92#%.2f元/升" % gas[0]) if gas is not None else "92#--"
-    return gstr + "  " + ostr
+    return ("金价%.1f元/克" % g) if g is not None else "金价--"
 
 
 # ---------- 农历 ----------
@@ -957,7 +945,7 @@ EIPS_CELL_H = 38.7
 
 
 def draw_footer(d, left_x, right_x, at):
-    """底部状态栏：左侧「更新 时间」；右侧默认显示金价+江苏油价（电量位留白时），
+    """底部状态栏：左侧「更新 时间」；右侧默认显示实时金价（电量位留白时），
     若开启电量显示则让回电量。竖屏专用。"""
     d.text((left_x + 2, BATT_BASE_Y), "更新 " + at.strftime("%m-%d %H:%M"),
            font=font(FONT_REG, FOOTER_FONT_SIZE), fill=BLACK, anchor="ls")
@@ -1180,7 +1168,7 @@ def render_landscape(data, out, at=None):
     d.text((M + 2, 560), "更新 " + at.strftime("%m-%d %H:%M"),
            font=font(FONT_REG, FOOTER_FONT_SIZE), fill=BLACK)
     # 右侧电量位：2026-11-04 中午起默认留白（用户要求，见 show_batt）。
-    # 留白时改放「金价 + 江苏油价」；若开启电量显示则让回电量。
+    # 留白时改放「实时金价」；若开启电量显示则让回电量。
     if show_batt():
         d.text((RIGHT, 560), batt_text(), font=font(FONT_REG, FOOTER_FONT_SIZE),
                fill=BLACK, anchor="ra")
