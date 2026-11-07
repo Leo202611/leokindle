@@ -370,6 +370,59 @@ def fetch_gold_cny():
 # 用「调价窗口」硬编表（参考数据 2026-11-07：江苏 92#8.85 / 95#9.41 / 0#8.55 元/升）。
 
 
+def weather_tip(data, at):
+    """左上角生活提示：完全由已抓取的天气数据推导，零新增数据源。
+    返回 1-2 行中文提示（list[str]）。优先级：大温差 > 高降水 > 大风 > 极寒/酷热 >
+    干燥 > 平稳。每日随天气自然轮换，e-ink 灰度下清晰可读。
+    （2026-11-07 用户定案：替代原节气诗词抬头，字号放大避免拥挤。）"""
+    cur = data.get("current", {}) or {}
+    daily = data.get("daily", {}) or {}
+    hourly = data.get("hourly", {}) or {}
+    tips = []
+
+    def fnum(x):
+        try:
+            return float(x)
+        except Exception:
+            return None
+
+    hi = fnum((daily.get("temperature_2m_max") or [None])[0])
+    lo = fnum((daily.get("temperature_2m_min") or [None])[0])
+    tmax = fnum(cur.get("temperature_2m_max"))
+    tmin = fnum(cur.get("temperature_2m_min"))
+    if hi is None and tmax is not None:
+        hi = tmax
+    if lo is None and tmin is not None:
+        lo = tmin
+
+    pp_now = fnum(cur.get("precipitation_probability"))
+    pp_day = pp_now
+    ppl = hourly.get("precipitation_probability") or []
+    try:
+        pp_day = max([p for p in ppl if p is not None][:48] or [pp_now])
+    except Exception:
+        pass
+
+    ws = fnum(cur.get("wind_speed_10m"))
+    rh = fnum(cur.get("relative_humidity_2m"))
+
+    if hi is not None and lo is not None and (hi - lo) >= 8:
+        tips.append("昼夜温差 %d℃，早晚添衣" % round(hi - lo))
+    if pp_day is not None and pp_day >= 60:
+        tips.append("降水概率 %d%%，出门带伞" % round(pp_day))
+    if ws is not None and ws >= 25:
+        tips.append("风力较大，注意防风")
+    if lo is not None and lo <= 3:
+        tips.append("早晚低温 %d℃，保暖" % round(lo))
+    if hi is not None and hi >= 33:
+        tips.append("高温 %d℃，注意防暑" % round(hi))
+    if rh is not None and rh < 30:
+        tips.append("空气干燥，多补水")
+    if not tips:
+        tips.append("天气平稳，适宜出行")
+    return tips[:2]
+
+
 def draw_gold_price(d, right_x, top_y, d_date):
     """底部右下端：实时金价 + 较昨日涨跌，两行右对齐（单行太长，故分两行）。
     line1: 今日金价：873.5 元/克
@@ -799,15 +852,13 @@ def render(data, out, at=None):
     # 顶部：城市 + 问候语 | 干支纪年 + 生肖
     # 时钟已移除：本仪表盘每小时才刷新一次，显示分钟级时钟没有意义；
     # 改为几乎不变的干支纪年与生肖，次年生肖随春节自动更替。
-    # 顶部左上：随节气时段轮换的元稹《咏廿四气诗》首联两句 + 署名。
-    # 节气时段 = 当前所处的 24 节气之一（小寒起、到下一节气前），每天自动轮换；
-    # 非节气日也显示"当前时段"的诗，故全年每天都有诗。城市名/问候语已让位给诗词。
-    term_p = current_solar_term_period(at.date())
-    pl1, pl2 = SOLAR_POEM.get(term_p, ("", ""))
-    d.text((M, 18), pl1, font=font(FONT_REG, 24), fill=BLACK)
-    d.text((M, 50), pl2, font=font(FONT_REG, 24), fill=BLACK)
-    d.text((M, 82), "——元稹《咏廿四气诗·%s》" % term_p,
-           font=font(FONT_REG, 15), fill=GRAY)
+    # 顶部左上：天气衍生生活提示（2026-11-07 用户定案，替代原节气诗词；
+    # 字号放大、单行主提示，避免"偏小/挤"观感）。完全由已抓天气数据推导，零新增数据源。
+    tip_lines = weather_tip(data, at)
+    ty = 24
+    for ln in tip_lines:
+        d.text((M, ty), ln, font=font(FONT_BOLD, 26), fill=BLACK)
+        ty += 36
     gz, sheng, gz_year = ganzhi_of(at.date())
     f_gz = font(FONT_BOLD, 40)
     gw = d.textlength(gz, font=f_gz)
@@ -1110,13 +1161,12 @@ def render_landscape(data, out, at=None):
     RIGHT = LW - M
 
     # 顶栏：城市 + 问候 | 干支 + 生肖
-    # 顶栏：随节气时段轮换的元稹《咏廿四气诗》首联两句 + 署名（城市名/问候语让位）。
-    term_p = current_solar_term_period(at.date())
-    pl1, pl2 = SOLAR_POEM.get(term_p, ("", ""))
-    d.text((M, 10), pl1, font=font(FONT_REG, 22), fill=BLACK)
-    d.text((M, 38), pl2, font=font(FONT_REG, 22), fill=BLACK)
-    d.text((M, 64), "——元稹《咏廿四气诗·%s》" % term_p,
-           font=font(FONT_REG, 13), fill=GRAY)
+    # 顶栏左上：天气衍生生活提示（替代原节气诗词）。
+    tip_lines = weather_tip(data, at)
+    ty = 12
+    for ln in tip_lines:
+        d.text((M, ty), ln, font=font(FONT_BOLD, 24), fill=BLACK)
+        ty += 32
     gz, sheng, gz_year = ganzhi_of(at.date())
     f_gz = font(FONT_BOLD, 36)
     gw = d.textlength(gz, font=f_gz)
