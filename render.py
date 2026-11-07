@@ -424,23 +424,23 @@ def weather_tip(data, at):
 
 
 def draw_gold_price(d, right_x, top_y, d_date):
-    """底部右下端：实时金价 + 较昨日涨跌，两行右对齐（单行太长，故分两行）。
-    line1: 今日金价：873.5 元/克
-    line2: 较昨日：+11.3（+1.30%）
-    取不到金价显示「金价 --」单行；取到金价但取不到昨收则只显示金价行。
+    """底部右端：实时金价 + 较昨日涨跌，**单行右对齐**，与左侧「更新 时间」同一基线，
+    不再分两行掉到下方。格式：今日金价：873.5元/克｜较昨日：+11.3（+1.31%）
+    用 15px（比左侧 16px 的「更新」略小 1px，肉眼无感）预留 CI 的 Noto CJK 比 Mac
+    Hiragino 字形略宽的安全余量，避免单行过长时与左侧「更新」撞字。
+    取不到金价显示「金价 --」单行；取到金价但取不到昨收则只显示金价段。
     注：e-ink 为灰度，无法用红/绿区分涨跌，以 +/- 号 + 数值表达。"""
     g, prev = fetch_gold_cny()
     if g is None:
-        d.text((right_x, top_y), "金价 --", font=font(FONT_REG, 16), fill=BLACK, anchor="rs")
+        d.text((right_x, top_y), "金价 --", font=font(FONT_REG, 15), fill=BLACK, anchor="rs")
         return
-    d.text((right_x, top_y), "今日金价：%.1f 元/克" % g,
-           font=font(FONT_REG, 16), fill=BLACK, anchor="rs")
+    line = "今日金价：%.1f元/克" % g
     if prev is not None and prev != 0:
         delta = g - prev
         pct = delta / prev * 100.0
         sign = "+" if delta >= 0 else "-"
-        d.text((right_x, top_y + 22), "较昨日：%s%.1f（%s%.2f%%）" % (sign, abs(delta), sign, abs(pct)),
-               font=font(FONT_REG, 16), fill=BLACK, anchor="rs")
+        line += "｜较昨日：%s%.1f（%s%.2f%%）" % (sign, abs(delta), sign, abs(pct))
+    d.text((right_x, top_y), line, font=font(FONT_REG, 15), fill=BLACK, anchor="rs")
 
 
 # ---------- 农历 ----------
