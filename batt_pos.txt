@@ -1,0 +1,9 @@
+# 底部状态栏右侧电量位元数据（当前设备端不读取，仅留档）。
+# 状态：留白（2026-11-04 用户决定暂不展示每小时变化的电量数值）。
+#       设备端电量上报已停用（省电）；恢复需 --show-batt + BATT_REPORT=1。
+# 设备端读电量：lipc-get-prop com.lab126.powerd battLevel / isCharging
+#
+# 留档：eips 字符格实测标定值（dash_probe3 v3）
+#   命令语法 eips [col] [row] "text"
+#   col0 字形左缘 x=40；row0 字形顶缘 y=0；列宽 13.65；行高 38.70
+#   若将来要恢复设备端实时数字叠加，用这组值换算 col/row 即可。

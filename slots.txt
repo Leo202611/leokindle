@@ -1,0 +1,28 @@
+# 待机画面固定槽位图（每次 CI 运行重新生成）
+# 槽位图 -> 源逐小时图（该槽位下一次发生的整点）
+# 与设备端 /mnt/us/dash/ss_config.sh 的 SS_HOURS 保持一致
+ss_00.png -> 20261108_00.png
+ss_01.png -> 20261108_01.png
+ss_02.png -> 20261108_02.png
+ss_03.png -> 20261108_03.png
+ss_04.png -> 20261108_04.png
+ss_05.png -> 20261108_05.png
+ss_06.png -> 20261108_06.png
+ss_07.png -> 20261108_07.png
+ss_08.png -> 20261108_08.png
+ss_09.png -> 20261108_09.png
+ss_10.png -> 20261108_10.png
+ss_11.png -> 20261108_11.png
+ss_12.png -> 20261108_12.png
+ss_13.png -> 20261108_13.png
+ss_14.png -> 20261108_14.png
+ss_15.png -> 20261108_15.png
+ss_16.png -> 20261108_16.png
+ss_17.png -> 20261108_17.png
+ss_18.png -> 20261108_18.png
+ss_19.png -> 20261108_19.png
+ss_20.png -> 20261108_20.png
+ss_21.png -> 20261108_21.png
+ss_22.png -> 20261107_22.png
+ss_23.png -> 20261107_23.png
+ss_latest.png -> ss_prev.png (最近一次已发生的更新槽位)
