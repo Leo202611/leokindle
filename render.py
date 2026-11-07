@@ -227,6 +227,36 @@ TERM_PHRASE = {
     "白露": "露凝而白", "秋分": "丹桂飘香", "寒露": "露寒将凝", "霜降": "霜染层林",
     "立冬": "添衣保暖", "小雪": "初雪轻盈", "大雪": "瑞雪兆丰", "冬至": "数九寒天",
 }
+
+# 元稹《咏廿四气诗》二十四首的「首联」（前两句），按节气名索引。
+# 全部逐句联网核对自公开古籍/诗词库（2026-11-07 核实），非凭记忆。
+# 抬头随「当前节气时段」轮换显示其首联两句 + 署名。
+SOLAR_POEM = {
+    "小寒": ("小寒连大吕", "欢鹊垒新巢"),
+    "大寒": ("腊酒自盈樽", "金炉兽炭温"),
+    "立春": ("春冬移律吕", "天地换星霜"),
+    "雨水": ("雨水洗春容", "平田已见龙"),
+    "惊蛰": ("阳气初惊蛰", "韶光大地周"),
+    "春分": ("二气莫交争", "春分雨处行"),
+    "清明": ("清明来向晚", "山渌正光华"),
+    "谷雨": ("谷雨春光晓", "山川黛色青"),
+    "立夏": ("欲知春与夏", "仲吕启朱明"),
+    "小满": ("小满气全时", "如何靡草衰"),
+    "芒种": ("芒种看今日", "螳螂应节生"),
+    "夏至": ("处处闻蝉响", "须知五月中"),
+    "小暑": ("倏忽温风至", "因循小暑来"),
+    "大暑": ("大暑三秋近", "林钟九夏移"),
+    "立秋": ("不期朱夏尽", "凉吹暗迎秋"),
+    "处暑": ("向来鹰祭鸟", "渐觉白藏深"),
+    "白露": ("露沾蔬草白", "天气转青高"),
+    "秋分": ("琴弹南吕调", "风色已高清"),
+    "寒露": ("寒露惊秋晚", "朝看菊渐黄"),
+    "霜降": ("风卷清云尽", "空天万里霜"),
+    "立冬": ("霜降向人寒", "轻冰渌水漫"),
+    "小雪": ("莫怪虹无影", "如今小雪时"),
+    "大雪": ("积阴成大雪", "看处乱霏霏"),
+    "冬至": ("二气俱生处", "周家正立年"),
+}
 # 各节气的太阳视黄经（小寒 285°，每过一个节气 +15°）
 _STM_LON = [(285.0 + 15.0 * i) % 360.0 for i in range(24)]
 
@@ -283,6 +313,74 @@ def solar_term_of(d):
         if solar_term_date(d.year, n) == d:
             return SOLAR[n]
     return None
+
+
+def current_solar_term_period(d):
+    """返回包含日期 d 的「节气时段」名（24 时段之一，小寒起算）。
+
+    24 节气把一年切成 24 段，每段从某个节气当日开始、到下一个节气前结束。
+    这样全年每天都能对应一首诗，并在每个节气交界处自动轮换，
+    而不是只有 24 天有诗。d 早于当年小寒时取上一年冬至时段。
+    """
+    best = None
+    for n in range(24):
+        if solar_term_date(d.year, n) <= d:
+            best = SOLAR[n]
+    return best if best is not None else "冬至"
+
+
+_GOLD_CACHE = None
+def fetch_gold_cny():
+    """上海黄金交易所 Au(T+D) 实时价（元/克），取自新浪行情（免 token）。
+    失败或盘中无数据返回 None；成功结果进程内缓存，避免 CI 批量渲染时反复请求。
+    字段下标 [4] = 最新价，已与一支股票的现价下标交叉验证。
+    """
+    global _GOLD_CACHE
+    if _GOLD_CACHE is not None:
+        return _GOLD_CACHE
+    price = None
+    try:
+        req = urllib.request.Request(
+            "https://hq.sinajs.cn/list=gds_AUTD",
+            headers={"Referer": "https://finance.sina.com.cn",
+                     "User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            body = r.read().decode("gbk", "ignore")
+        parts = body.split('"')
+        if len(parts) >= 2:
+            f = parts[1].split(",")
+            if len(f) > 4:
+                price = float(f[4])
+    except Exception:
+        price = None
+    if price is not None:
+        _GOLD_CACHE = price
+    return price
+
+
+# 江苏省成品油最高零售价（元/升）。发改委约每 10 个工作日调一次，并非"每日"；
+# 故用「调价窗口」表而非实时抓取（抓取易碎、且分省无干净 JSON）。
+# 数据核实：2026-11-07 多源一致（汽车之家/东方财富/今日油价网）。
+# 下一窗口 2026-11-12 24:00，届时在此追加一行（保留旧行无害）。
+JIANGSU_GAS = [
+    (datetime.date(2026, 11, 3), 8.85, 9.41, 8.55),   # (生效日, 92#, 95#, 0#)
+]
+def jiangsu_gas(d):
+    """返回 (92, 95, 0) 或 None（仅当 d 早于所有生效日）。"""
+    cur = None
+    for eff, a, b, c in JIANGSU_GAS:
+        if d >= eff:
+            cur = (a, b, c)
+    return cur
+
+
+def price_line(d):
+    """底部状态栏右端用的「金价 + 江苏油价」短串；任一取不到则显示 --。"""
+    g = fetch_gold_cny()
+    gas = jiangsu_gas(d)
+    gstr = ("金价%.1f元/克" % g) if g is not None else "金价--"
+    ostr = ("92#%.2f元/升" % gas[0]) if gas is not None else "92#--"
+    return gstr + "  " + ostr
 
 
 # ---------- 农历 ----------
@@ -694,8 +792,15 @@ def render(data, out, at=None):
     # 顶部：城市 + 问候语 | 干支纪年 + 生肖
     # 时钟已移除：本仪表盘每小时才刷新一次，显示分钟级时钟没有意义；
     # 改为几乎不变的干支纪年与生肖，次年生肖随春节自动更替。
-    d.text((M, 22), city_label(), font=font(FONT_BOLD, 30), fill=BLACK)
-    d.text((M + 2, 60), greeting(at.hour, solar_term_of(at.date())), font=font(FONT_REG, 20), fill=GRAY)
+    # 顶部左上：随节气时段轮换的元稹《咏廿四气诗》首联两句 + 署名。
+    # 节气时段 = 当前所处的 24 节气之一（小寒起、到下一节气前），每天自动轮换；
+    # 非节气日也显示"当前时段"的诗，故全年每天都有诗。城市名/问候语已让位给诗词。
+    term_p = current_solar_term_period(at.date())
+    pl1, pl2 = SOLAR_POEM.get(term_p, ("", ""))
+    d.text((M, 18), pl1, font=font(FONT_REG, 24), fill=BLACK)
+    d.text((M, 50), pl2, font=font(FONT_REG, 24), fill=BLACK)
+    d.text((M, 82), "——元稹《咏廿四气诗·%s》" % term_p,
+           font=font(FONT_REG, 15), fill=GRAY)
     gz, sheng, gz_year = ganzhi_of(at.date())
     f_gz = font(FONT_BOLD, 40)
     gw = d.textlength(gz, font=f_gz)
@@ -852,12 +957,18 @@ EIPS_CELL_H = 38.7
 
 
 def draw_footer(d, left_x, right_x, at):
-    """底部状态栏：左侧「更新 时间」；右侧默认留白（见 show_batt）。竖屏与横屏共用。"""
+    """底部状态栏：左侧「更新 时间」；右侧默认显示金价+江苏油价（电量位留白时），
+    若开启电量显示则让回电量。竖屏专用。"""
     d.text((left_x + 2, BATT_BASE_Y), "更新 " + at.strftime("%m-%d %H:%M"),
            font=font(FONT_REG, FOOTER_FONT_SIZE), fill=BLACK, anchor="ls")
     if show_batt():
         d.text((right_x, BATT_BASE_Y), batt_text(),
                font=font(FONT_REG, FOOTER_FONT_SIZE), fill=BLACK, anchor="rs")
+    else:
+        pl = price_line(at.date())
+        if pl:
+            d.text((right_x, BATT_BASE_Y), pl,
+                   font=font(FONT_REG, FOOTER_FONT_SIZE), fill=BLACK, anchor="rs")
 
 
 # ---------------------------------------------------------------------------
@@ -995,8 +1106,13 @@ def render_landscape(data, out, at=None):
     RIGHT = LW - M
 
     # 顶栏：城市 + 问候 | 干支 + 生肖
-    d.text((M, 12), city_label(), font=font(FONT_BOLD, 28), fill=BLACK)
-    d.text((M + 2, 46), greeting(at.hour, solar_term_of(at.date())), font=font(FONT_REG, 19), fill=GRAY)
+    # 顶栏：随节气时段轮换的元稹《咏廿四气诗》首联两句 + 署名（城市名/问候语让位）。
+    term_p = current_solar_term_period(at.date())
+    pl1, pl2 = SOLAR_POEM.get(term_p, ("", ""))
+    d.text((M, 10), pl1, font=font(FONT_REG, 22), fill=BLACK)
+    d.text((M, 38), pl2, font=font(FONT_REG, 22), fill=BLACK)
+    d.text((M, 64), "——元稹《咏廿四气诗·%s》" % term_p,
+           font=font(FONT_REG, 13), fill=GRAY)
     gz, sheng, gz_year = ganzhi_of(at.date())
     f_gz = font(FONT_BOLD, 36)
     gw = d.textlength(gz, font=f_gz)
@@ -1064,11 +1180,15 @@ def render_landscape(data, out, at=None):
     d.text((M + 2, 560), "更新 " + at.strftime("%m-%d %H:%M"),
            font=font(FONT_REG, FOOTER_FONT_SIZE), fill=BLACK)
     # 右侧电量位：2026-11-04 中午起默认留白（用户要求，见 show_batt）。
-    # 恢复显示时锚点仍用 "ra"（右对齐 + 顶对齐）与左侧默认的 "la" 齐平：
-    # 原来用 "rs"（右对齐 + 基线对齐），同样 y=560 却比左侧低约一个字高。
+    # 留白时改放「金价 + 江苏油价」；若开启电量显示则让回电量。
     if show_batt():
         d.text((RIGHT, 560), batt_text(), font=font(FONT_REG, FOOTER_FONT_SIZE),
                fill=BLACK, anchor="ra")
+    else:
+        pl = price_line(at.date())
+        if pl:
+            d.text((RIGHT, 560), pl, font=font(FONT_REG, FOOTER_FONT_SIZE),
+                   fill=BLACK, anchor="ra")
 
     # 旋转成 600x800。
     # 用 ROTATE_90（逆时针 90 度）：已用 ASCII 标记实测验证过——
