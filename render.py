@@ -399,17 +399,30 @@ def poem_for(at):
 
 _GOLD_CACHE = None
 def fetch_gold_cny():
-    """上海黄金交易所 Au(T+D) 实时价与昨收（元/克），取自新浪行情（免 token）。
-    返回 (最新价, 昨收)；失败或无数据返回 (None, None)。成功结果进程内缓存，
+    """上海黄金交易所 Au(T+D) 最新价与昨结算（元/克），取自新浪行情（免 token）。
+    返回 (最新价, 昨结算)；失败/无数据/基准异常返回 (price, None)。进程内缓存，
     避免 CI 批量渲染时反复请求。
-    字段下标：[4]=最新价（已与一支股票现价下标交叉验证）；[5]=昨收
-    （日内恒定、多次抓取不变，符合昨收特征；夜盘时段 sina 的 [1] 位为 0 占位，
-    真实昨收落在 [5]）。
+
+    【2026-11-08 修正字段下标】此前误取 [4] 当最新价、[5] 当昨收，导致屏保上
+    「今日金价」显示的是当日**最高价**、「较昨日」显示的是**日内最高−最低振幅**，
+    与真实涨跌毫无关系。现改为：
+      [0] = 最新价；[7] = 昨结算（涨跌基准）
+    实抓样本（2026-11-07 02:29:52）：
+      872.50,0,872.50,873.00,873.50,862.23,02:29:52,868.08,871.20,8186,3.00,10.00,...
+    校勘依据（三方吻合）：
+      ① 新浪 AUTD 官方页面「最新价 872.07 / 昨结算 868.08 / +3.99(+0.46%)」
+         = 872.07−868.08，与 [7]=868.08 精确一致；
+      ② 上金所 2026-11-06 收盘价 868.08 = [7]；
+      ③ 页面「开盘价 871.20」= [8]，佐证字段位序。
+      用本样本重算 872.50−868.08 = +4.42(+0.51%)，与官方同向同量级，自洽。
+    注：新浪未公开字段文档，[7] 语义由上述交叉验证推定。为防再度输出错误数字，
+    下面对基准做合理性校验（须为正、且与最新价偏离不超过 20%），
+    异常时宁可只显示最新价、不显示涨跌行。
     """
     global _GOLD_CACHE
     if _GOLD_CACHE is not None:
         return _GOLD_CACHE
-    price = prev = None
+    price = settle = None
     try:
         req = urllib.request.Request(
             "https://hq.sinajs.cn/list=gds_AUTD",
@@ -420,17 +433,21 @@ def fetch_gold_cny():
         parts = body.split('"')
         if len(parts) >= 2:
             f = parts[1].split(",")
-            if len(f) > 5:
-                price = float(f[4])
+            if len(f) > 7:
+                price = float(f[0])
                 try:
-                    prev = float(f[5])
+                    settle = float(f[7])
                 except Exception:
-                    prev = None
+                    settle = None
+                # 防呆：基准非正、或与最新价偏离过大（字段语义变化/脏数据）则不显示涨跌
+                if settle is not None and (
+                        settle <= 0 or abs(price - settle) / settle > 0.20):
+                    settle = None
     except Exception:
-        price = prev = None
+        price = settle = None
     if price is not None:
-        _GOLD_CACHE = (price, prev)
-    return price, prev
+        _GOLD_CACHE = (price, settle)
+    return price, settle
 
 
 # 油价已移除（用户 2026-11-07 决定）：发改委约每 10 个工作日才调一次、且分省，
@@ -445,21 +462,29 @@ def fetch_gold_cny():
 
 
 def draw_gold_price(d, right_x, top_y, d_date):
-    """方案2（2026-11-07 定案）：『今日金价』抬高一行、『较昨日』与左侧『更新』同基线；
+    """方案2（2026-11-07 定案）：『今日金价』抬高一行、涨跌行与左侧『更新』同基线；
     两行右对齐、字号均与『更新』一致(FOOTER_FONT_SIZE=16)。取不到金价显示「金价 --」单行；
-    取到金价但取不到昨收则只显示『今日金价』一行(落同基线，不悬空)。
+    取到金价但无有效昨结算则只显示『今日金价』一行(落同基线，不悬空)。
+    【2026-11-08】涨跌基准改为**昨结算**，文案「较昨日」→「较昨结算」
+    （Au(T+D) 是延期合约，官方涨跌口径为较昨结算；且有夜盘归属次一交易日、
+     周末休市，「昨日」概念模糊）。数值取 [0]最新价 − [7]昨结算，见 fetch_gold_cny。
     注：e-ink 为灰度，无法用红/绿区分涨跌，以 +/- 号 + 数值表达。"""
-    g, prev = fetch_gold_cny()
+    g, settle = fetch_gold_cny()
     if g is None:
         d.text((right_x, top_y), "金价 --", font=font(FONT_REG, FOOTER_FONT_SIZE), fill=BLACK, anchor="rs")
         return
-    if prev is not None and prev != 0:
+    if settle is not None and settle != 0:
         d.text((right_x, top_y - 30), "今日金价：%.1f元/克" % g,
                font=font(FONT_REG, FOOTER_FONT_SIZE), fill=BLACK, anchor="rs")
-        delta = g - prev
-        pct = delta / prev * 100.0
+        delta = g - settle
+        pct = delta / settle * 100.0
         sign = "+" if delta >= 0 else "-"
-        d.text((right_x, top_y), "较昨日：%s%.1f（%s%.2f%%）" % (sign, abs(delta), sign, abs(pct)),
+        line = "较昨结算：%s%.1f（%s%.2f%%）" % (sign, abs(delta), sign, abs(pct))
+        # 极端大波动时文案变长，可能挤到中央电量：超过预留宽度就省去百分比，
+        # 只留涨跌额（金价单日 >10% 极罕见，宁可少一字也不撞字）。
+        if d.textlength(line, font=font(FONT_REG, FOOTER_FONT_SIZE)) > 220:
+            line = "较昨结算：%s%.1f" % (sign, abs(delta))
+        d.text((right_x, top_y), line,
                font=font(FONT_REG, FOOTER_FONT_SIZE), fill=BLACK, anchor="rs")
     else:
         d.text((right_x, top_y), "今日金价：%.1f元/克" % g,
