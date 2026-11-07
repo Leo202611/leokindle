@@ -2,18 +2,19 @@
 # -*- coding: utf-8 -*-
 """Kindle 仪表盘 · 真实电量云端中转读取端（GitHub Actions 调用）。
 
-【2026-11-04 12:37 起停用】用户要求停掉设备每小时上报以省电，
-且画面右下电量位已留白。设备端 BATT_REPORT=0 不再 POST，
-CI workflow 里调用本脚本的步骤也已注释掉。
-本文件保留供以后恢复，当前不会被 CI 执行。
+【2026-11-07 恢复启用】曾在 11-04 12:37 为省电停掉（BATT_REPORT=0、
+CI 步骤注释）；11-07 用户定案「搭车上报」方案后恢复：设备改为在
+每小时整点取图时复用已打开的 WiFi 顺手 POST（零额外唤醒），
+电量显示在底栏**中央**（不再是右下角，右下角仍显示金价）。
 
-链路（用户选定的 A 方案，历史留档）：
-    Kindle 每小时读 lipc battLevel/isCharging
-      -> POST 到 ntfy.sh 公共 topic
-      -> CI 每小时跑本脚本读回最新一条
+链路（当前生效）：
+    Kindle 每次整点取图时读 lipc battLevel/isCharging（三路兜底）
+      -> POST 到 ntfy.sh 公共 topic（ss_update_once.sh 的 report_batt）
+      -> CI 每小时 :17 跑本脚本读回 2h 内最新一条
       -> 把 DASH_BATT / DASH_CHARGING 写进 $GITHUB_ENV
-      -> render.py --batt N [--charging] 把真实电量烧进 PNG
-      -> 设备下一轮取图显示
+      -> render.py --batt N [--charging] 烧进整套 PNG 的底栏中央
+      -> 设备下一整点取图显示（约滞后 1h，电量慢变量下误差 <1%）
+    读不到/过期时 DASH_BATT 为空 -> 中央留白，绝不伪造数字。
 
 为什么是 ntfy.sh：
   * 匿名可写可读，无 token / 无账号 / 无密钥，设备脚本里不必内置会过期的凭据；

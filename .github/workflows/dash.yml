@@ -40,17 +40,14 @@ jobs:
       - name: 安装依赖
         run: pip install -q -r requirements.txt
 
-      # 【2026-11-04 12:37 起停用】用户要求停掉设备每小时上报以省电，
-      # 画面右下电量位也已留白。设备端 BATT_REPORT=0 不再 POST，
-      # 下面这一步读不到有效数据、纯属多余，暂时注释掉。
-      # 恢复时三处一起开：
-      #   1) dashd_v5.sh 的 BATT_REPORT=1（重新上报 + 恢复 :35 跟进取图）
-      #   2) 取消下面两行注释（CI 读回并注入 GITHUB_ENV）
-      #   3) 渲染命令加 --show-batt（或设 DASH_SHOW_BATT=1）
-      # 原逻辑：读 ntfy 2 小时内最新一条；读不到/过期/JSON 非法时
-      # DASH_BATT 为空，绝不伪造数字。诊断信息由 batt_relay.py 写 stderr。
-      # - name: 读取设备上报的真实电量（云端中转）
-      #   run: python3 batt_relay.py >> "$GITHUB_ENV"
+      # 【2026-11-07 恢复】底栏中央显示 Kindle 电量（用户定案「搭车上报」方案）。
+      # 设备端 ss_update_once.sh 在每小时整点取图时 WiFi 已开，顺手把 battLevel/isCharging
+      # POST 到 ntfy（零额外唤醒、不恢复 :35 跟进取图，续航基本不变）。
+      # 本步读回 2 小时内最新一条写进 GITHUB_ENV；读不到/过期/JSON 非法时 DASH_BATT 为空，
+      # render.py 便不绘制中央电量（留白），绝不伪造数字。诊断信息由 batt_relay.py 写 stderr。
+      # 数值约滞后 1 小时，但电量是慢变量(约 0.3%/小时)，整数显示下误差 <1%。
+      - name: 读取设备上报的真实电量（云端中转）
+        run: python3 batt_relay.py >> "$GITHUB_ENV"
 
       - name: 批量渲染逐小时图（竖屏 + 横屏两套）
         run: |

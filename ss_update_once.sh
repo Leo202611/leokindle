@@ -1,12 +1,14 @@
 #!/bin/sh
 # 单次更新待机画面（KUAL「立即更新待机画面」+ 调度器共用）
 #
-# 做四件事：按需开 WiFi -> 拉对应槽位 PNG -> eips 刷一次屏 -> 写入 linkss 屏保目录。
+# 做五件事：按需开 WiFi -> 拉对应槽位 PNG -> eips 刷一次屏 -> 写入 linkss 屏保目录
+#           -> 顺手搭车上报实测电量（2026-11-07 新增，见下方 report_batt）。
 # 省电约束（用户要求「不接电源撑一周」）：
 #   * 全程硬超时 SS_UPDATE_TIMEOUT 秒，超时即放弃，绝不重试；
 #   * 连不上 WiFi 直接跳过下载，不空等、不 ping 循环；
 #   * 用完立刻恢复 WiFi 原状态；不轮询、不整屏反复重绘、不启动 keep_awake；
-#   * 只刷一次 eips（e-ink 双稳态，之后保持零耗电）。
+#   * 只刷一次 eips（e-ink 双稳态，之后保持零耗电）；
+#   * 电量上报复用本次已打开的 WiFi，零额外唤醒、单次请求不重试、失败不阻断显示。
 #
 # 图源命名：ss_06.png / ss_09.png / ss_12.png / ss_15.png / ss_18.png
 # 是 CI 固定槽位图，不会像逐小时图那样被 orphan 分支滚动清理掉；
@@ -34,6 +36,10 @@ CK=""
 [ -n "${SS_CURL_T:-}" ]      || SS_CURL_T=20
 [ -n "${SS_WIFI_WAIT:-}" ]   || SS_WIFI_WAIT=20
 [ -n "${SS_UPDATE_TIMEOUT:-}" ] || SS_UPDATE_TIMEOUT=60
+# 电量「搭车上报」开关与中转站（2026-11-07 恢复；设 SS_BATT_REPORT=0 可随时关掉）
+[ -n "${SS_BATT_REPORT:-}" ] || SS_BATT_REPORT=1
+[ -n "${SS_BATT_TOPIC:-}" ]  || SS_BATT_TOPIC="k8dash_batt_7f3c9e2a"
+SS_BATT_URL="https://ntfy.sh/$SS_BATT_TOPIC"
 
 log() {
     echo "[$(date +'%m-%d %H:%M:%S')] $*" >> "$SS_LOG" 2>/dev/null
@@ -79,6 +85,40 @@ fetch_one() {
         curl -sL $CK -m "$F_TMO" -o "$TMP" "$F_URL" 2>/dev/null
     fi
     png_ok "$TMP"
+}
+
+# 搭车上报实测电量（2026-11-07 用户定案「搭车上报」方案）。
+# 本次取图时 WiFi 已经打开，顺手 POST 一条 JSON 到 ntfy 公共 topic；
+# CI 每小时 :17 用 batt_relay.py 读回，把电量烧进下一轮 PNG 的底栏中央。
+# 因此数值约滞后 1 小时；电量是慢变量(约0.3%/小时)，整数显示下误差 <1%。
+# 省电要点：零额外唤醒、单次短超时请求、失败不重试不重试取图、绝不阻断刷屏。
+# 读取三条路径（前两条为本项目 Probe5 实测，第三条来自 HA 屏保方案的启发）：
+#   1) lipc-get-prop com.lab126.powerd battLevel
+#   2) /sys/class/power_supply/bd7181x_bat/capacity
+#   3) /usr/bin/powerd_test -s 的 "Battery Level:" 行
+report_batt() {
+    [ "$SS_BATT_REPORT" = "1" ] || return 0
+    B=$(lipc-get-prop com.lab126.powerd battLevel 2>/dev/null)
+    case "$B" in ''|*[!0-9]*) B=$(cat /sys/class/power_supply/bd7181x_bat/capacity 2>/dev/null) ;; esac
+    case "$B" in ''|*[!0-9]*)
+        B=$(/usr/bin/powerd_test -s 2>/dev/null \
+            | awk -F: '/Battery Level/ {gsub(/[^0-9]/,"",$2); print $2; exit}') ;;
+    esac
+    case "$B" in ''|*[!0-9]*) log "电量上报: 三路都读不到，跳过"; return 0 ;; esac
+    if [ "$B" -lt 0 ] 2>/dev/null || [ "$B" -gt 100 ] 2>/dev/null; then
+        log "电量上报: 数值越界 [$B]，跳过"; return 0
+    fi
+    C=$(lipc-get-prop com.lab126.powerd isCharging 2>/dev/null)
+    case "$C" in 1) ;; *) C=0 ;; esac
+    PAYLOAD="{\"batt\":$B,\"charging\":$C}"
+    if curl -sL $CK -m 6 -o /dev/null -X POST \
+            -H "Content-Type: application/json" \
+            --data-binary "$PAYLOAD" "$SS_BATT_URL" 2>/dev/null; then
+        log "电量上报成功: $PAYLOAD"
+    else
+        log "电量上报失败（不影响显示，等下一个整点）: $PAYLOAD"
+    fi
+    return 0
 }
 
 log "===== 单次更新待机画面 ====="
@@ -204,6 +244,14 @@ if [ "$GOT" = "1" ]; then
     log "更新成功，用时 $(( $(date +%s) + SS_UPDATE_TIMEOUT - DEADLINE ))s"
 else
     log "更新失败，保留旧画面（省电：不重试）"
+fi
+
+# ---- 4.5 电量搭车上报（WiFi 此刻仍开着，零额外唤醒）----
+# 只在确实联网、且未超出本次 60s 预算时才发；失败不重试、不影响已刷好的画面。
+if [ "$ST" = "CONNECTED" ] && [ "$(date +%s)" -lt "$DEADLINE" ]; then
+    report_batt
+else
+    log "电量上报跳过（未联网或已近超时预算）"
 fi
 
 # ---- 5. 恢复 WiFi 原状态 ----

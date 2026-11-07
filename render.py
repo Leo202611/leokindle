@@ -996,16 +996,17 @@ def render(data, out, at=None):
 # 历史（2026-11-04 上午）：曾经把「电量：94」整串写死烧进 PNG；
 # 后来改为运行时注入（DASH_BATT / --batt），由 A 方案云端中转提供真实值。
 #
-# 2026-11-04 中午用户决定：**该位置暂时留白**。
-# 原因：电量每小时才随取图更新一次数值，看着反而别扭，不如不展示。
-# 处理方式是「默认不绘制」而不是删代码 —— batt_text() 与云端链路都保留，
-# 但设备端 12:37 起已停止上报（省电，BATT_REPORT=0），CI 读取步骤也停用。
-# 以后想恢复要三处一起开：--show-batt、BATT_REPORT=1、CI 电量读取步骤。
+# 2026-11-04 中午「右下角电量位留白」与 12:37「停掉每小时上报」曾是省电决定。
+# 2026-11-07 用户改为在底栏**中央**显示电量，并恢复上报（改为「搭车上报」：
+# 设备整点取图时 WiFi 已开，顺手 POST，零额外唤醒、不恢复 :35 跟进取图）。
+# 于是右下角 show_batt() 那套仍保持默认留白/显示金价；中央由新的
+# center_batt_text() / draw_batt_center() 独立控制，只看 DASH_BATT 是否注入。
 #
 # 设备端读电量接口（Probe5 实测确认）留档：
 #   lipc-get-prop com.lab126.powerd battLevel   -> 0..100
 #   lipc-get-prop com.lab126.powerd isCharging  -> 0/1
-# 也可用 sysfs：/sys/class/power_supply/bd7181x_bat/capacity
+#   /sys/class/power_supply/bd7181x_bat/capacity
+#   /usr/bin/powerd_test -s（HA 屏保方案的启发，第三条兜底）
 def show_batt():
     """底部状态栏右侧是否绘制电量。默认 False = 留白。"""
     return (os.environ.get("DASH_SHOW_BATT") or "").strip() in \
@@ -1020,6 +1021,30 @@ def batt_text():
     if (os.environ.get("DASH_BATT_CHARGING") or "").strip() == "1":
         s += " 充电中"
     return s
+
+
+def center_batt_text():
+    """底栏中央电量文案（2026-11-07 新增）：如「电量 83%」。
+    与右侧 show_batt() 那套完全独立——中央由 DASH_BATT 是否有效决定，
+    有效才画，无效则整块留白（设备离线/上报过期时宁可不画，也不显示 --）。
+    数据来自设备整点取图时「搭车」上报到 ntfy、CI 读回后注入的 DASH_BATT，
+    故数值约滞后 1 小时；电量是慢变量(约0.3%/小时)，整数显示下误差 <1%，无感。"""
+    v = (os.environ.get("DASH_BATT") or "").strip()
+    if not v.isdigit() or not (0 <= int(v) <= 100):
+        return ""
+    return "电量 %d%%" % int(v)
+
+
+def draw_batt_center(d, cx, y, anchor="ms"):
+    """底栏正中央绘制电量百分比，与「更新」「较昨日」同字号、同一水平线。
+    竖屏底栏用基线锚点（ls/rs）→ 传 'ms'；横屏底栏用顶部锚点（默认/ra）→ 传 'ma'。
+    竖屏 cx=W/2、横屏 cx=LW/2。
+    中央空档实测：竖屏 x=172..364(192px)、横屏 396px，文案仅约 73px，绝不撞左右。"""
+    t = center_batt_text()
+    if t:
+        d.text((cx, y), t, font=font(FONT_REG, FOOTER_FONT_SIZE),
+               fill=GRAY, anchor=anchor)
+
 
 # 底部状态栏统一字号：左侧「更新 时间」用 16px；
 # 右侧若恢复显示电量，也必须同字号（历史教训：曾 21px 明显偏大）。
@@ -1038,10 +1063,11 @@ EIPS_CELL_H = 38.7
 
 
 def draw_footer(d, left_x, right_x, at):
-    """底部状态栏：左侧「更新 时间」；右侧默认显示实时金价（电量位留白时），
-    若开启电量显示则让回电量。竖屏专用。"""
+    """底部状态栏：左「更新 时间」/ 中央「电量 N%」/ 右金价（方案2两行）。竖屏专用。
+    中央电量独立于右侧的 show_batt() 开关，由 DASH_BATT 是否注入决定（见 draw_batt_center）。"""
     d.text((left_x + 2, BATT_BASE_Y), "更新 " + at.strftime("%m-%d %H:%M"),
            font=font(FONT_REG, FOOTER_FONT_SIZE), fill=BLACK, anchor="ls")
+    draw_batt_center(d, W / 2, BATT_BASE_Y)
     if show_batt():
         d.text((right_x, BATT_BASE_Y), batt_text(),
                font=font(FONT_REG, FOOTER_FONT_SIZE), fill=BLACK, anchor="rs")
@@ -1256,6 +1282,7 @@ def render_landscape(data, out, at=None):
     d.line([(M, 552), (RIGHT, 552)], fill=LGRAY, width=2)
     d.text((M + 2, 560), "更新 " + at.strftime("%m-%d %H:%M"),
            font=font(FONT_REG, FOOTER_FONT_SIZE), fill=BLACK)
+    draw_batt_center(d, LW / 2, 560, "ma")
     # 右侧电量位：2026-11-04 中午起默认留白（用户要求，见 show_batt）。
     # 留白时改放「实时金价」；若开启电量显示则让回电量。
     if show_batt():
@@ -1348,16 +1375,21 @@ if __name__ == "__main__":
         render(data, os.path.join(args.outdir, "ss_prev.png"), slot_at)
         print("当前应显示槽位: %s -> ss_prev.png" % slot_at.strftime("%m-%d %H:00"))
 
-        # 底部状态栏右侧电量位元数据：记录「显示 / 留白」状态，
-        # 只为 CI 流程与将来调试留档，内容不再被设备端读取。
+        # 底部状态栏电量位元数据：只为 CI 流程与将来调试留档，设备端不读取。
         with open(os.path.join(args.outdir, "batt_pos.txt"), "w", encoding="utf-8") as f:
-            f.write("# 底部状态栏右侧电量位元数据（当前设备端不读取，仅留档）。\n")
-            if show_batt():
-                f.write("# 状态：显示，当前文案：%s（由 DASH_BATT / --batt 注入）\n" % batt_text())
+            f.write("# 底部状态栏电量位元数据（当前设备端不读取，仅留档）。\n")
+            f.write("# 2026-11-07 起：电量显示在底栏【中央】，由 DASH_BATT 是否注入决定；\n")
+            f.write("# 右下角仍显示金价（show_batt() 默认 False，不再用于电量）。\n")
+            cb = center_batt_text()
+            if cb:
+                f.write("# 状态：中央显示「%s」；右侧电量位：%s\n"
+                        % (cb, "显示" if show_batt() else "留白（显示金价）"))
             else:
-                f.write("# 状态：留白（2026-11-04 用户决定暂不展示每小时变化的电量数值）。\n")
-                f.write("#       设备端电量上报已停用（省电）；恢复需 --show-batt + BATT_REPORT=1。\n")
+                f.write("# 状态：中央留白（无有效上报/设备离线），绝不伪造数字。\n")
+            f.write("# 链路：ss_update_once.sh report_batt 搭车 POST -> ntfy -> batt_relay.py\n")
+            f.write("#       -> DASH_BATT/--batt -> 烧进整套 PNG（约滞后 1h）。\n")
             f.write("# 设备端读电量：lipc-get-prop com.lab126.powerd battLevel / isCharging\n")
+            f.write("#   兜底：sysfs capacity；/usr/bin/powerd_test -s\n")
             f.write("#\n")
             f.write("# 留档：eips 字符格实测标定值（dash_probe3 v3）\n")
             f.write("#   命令语法 eips [col] [row] \"text\"\n")
