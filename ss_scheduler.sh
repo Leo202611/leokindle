@@ -218,6 +218,14 @@ phase2_loop() {
                     log "事件 goingToScreenSaver：挂起即由 linkss 显示当前 bg_ss00.png，无需取图"
                     ;;
                 wakeupFromSuspend*)
+                    # 【关键修复 2026-11-08 22:00 实测冻结】RTC 唤醒后必须先「同步」延后自动挂起，
+                    # 且必须在本事件处理里（前台、第一时间）设，不能只放在后台 do_update 内。
+                    # 旧逻辑 deferSuspend 在后台子进程里设，启动有延迟；powerd 在「唤醒→恢复→重新
+                    # 挂起」周期里可能于后台进程设之前就完成挂起，把 do_update 冻在 suspended 态
+                    # （WiFi 仍开、进程未退出）→ eips 写不进帧缓冲、电量也不上报 → 屏保滞留旧时刻。
+                    # 这里在事件回调最开头同步设 240s（覆盖最坏 WiFi dance ~150s + 拉图 + eips 余量），
+                    # 锁住挂起直到整段更新跑完；更新跑完 deferSuspend 自然失效，交还 powerd 正常挂起。
+                    lipc-set-prop -i com.lab126.powerd deferSuspend 240 2>/dev/null
                     # RTC 到点 / 手动唤醒：等电源键抖动平息，刷一次最新图。
                     # 同时尽力早设闹钟（部分固件 wakeupFromSuspend 态也接受 rtcWakeup，
                     # 失败静默，交给紧随的 readyToSuspend 兜底——循环已不被阻塞故能及时设）。
