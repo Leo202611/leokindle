@@ -27,7 +27,7 @@
 export PATH=/usr/sbin:/usr/bin:/bin:/sbin:$PATH
 
 # 脚本版本号：每次实质改动都 +1，便于从 ntfy 遥测确认设备上跑的是哪一版。格式 YYYYMMDD.N。
-SVER="20261108.4"
+SVER="20261108.5"
 
 CONF=/mnt/us/dash/ss_config.sh
 [ -f "$CONF" ] && . "$CONF"
@@ -230,13 +230,18 @@ phase2_loop() {
         case "$STATUS" in
             *Screen*Saver*|*Ready*|*Suspended*)
                 # 空闲（屏保/待机/已挂起）：先取图刷屏，再武装 RTC 等待到下次槽位。
-                # 第一道锁：更新期间阻止提前重新挂起（覆盖 WiFi 硬切重连+拉图+eips）。
-                # 注：ss_update_once.sh 内部也会设一次 deferSuspend，双保险。
                 log "主循环：空闲($STATUS) → 取图刷屏"
                 dbg "IDLE upd"
-                lipc-set-prop -i com.lab126.powerd deferSuspend 240 2>/dev/null
                 SS_SNAP=1 do_update
+                # 【关键修复 2026-11-08 23:20 睡死(二)】do_update 内部设了 deferSuspend 240
+                # 阻止更新途中被挂起；但若不在更新后立刻解除，设备会被「推迟挂起」撑到 240s 后才真睡，
+                # 而我们在更新过程中于 readyToSuspend 设的 rtcWakeup（几十秒后）早已过期，
+                # 真睡下时已无有效闹钟 → 永久睡死（正是 23:20 那次的现象）。
+                # 故更新一结束立刻 deferSuspend 0，让设备立即进入可挂起态；随后的
+                # readyToSuspend 会用「距下次槽位」重新武装 rtcWakeup（对齐上游 wait_for_suspend）。
+                lipc-set-prop -i com.lab126.powerd deferSuspend 0 2>/dev/null
                 WAIT=$(secs_to_next_slot)
+                [ -z "$WAIT" ] && WAIT=60
                 log "主循环：等待 ${WAIT}s 到下次槽位（期间允许挂起）"
                 dbg "WILLWAIT ${WAIT}s"
                 wait_for_suspend "$WAIT"
