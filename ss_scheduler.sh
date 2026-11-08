@@ -30,7 +30,10 @@
 #     完全不依赖 RTC 闹钟 / powerd 事件；sleep 被 suspend 冻结也不影响（醒来按挂钟判定）。
 #   * 【后台 watch_events】-m 常驻 + 管道 while read + 外层 while true 断线重连；
 #     readyToSuspend 设闹钟+关 WiFi、wakeupFromSuspend 更新+兜底设闹钟、goingToScreenSaver 设闹钟。
-#   * 两路用 mkdir 原子锁 /tmp/ss_updating 去重，避免并发取图 / 重复 eips。
+#   * 两路用 SS_LAST 时间戳去重（60s 内的重复触发跳过）；**不用互斥锁**。
+#     【2026-11-09 01:2x】曾在 20261109.2 加过 mkdir /tmp/ss_updating 原子锁，
+#     结果 01:09 一次 do_update 未完成就永久残留，01:20 主循环被挡死 → 已移除。
+#     fanzhh 原版从不用锁，靠脚本幂等 + 时间戳去重，单次卡住不拖死后续。
 #   * 设闹钟只用 lipc rtcWakeup 相对秒（连设 4 次、不防抖）；绝不写 sysfs wakealarm、
 #     不调 preventScreenSaver、不自己 echo mem、事件回调零网络 I/O。
 #   * 计时一律挂钟 date +%s，绝不用 sleep 累计（BusyBox sleep 休眠时被冻结）。
@@ -39,8 +42,12 @@
 #   真实分钟时间戳 ss_HH_MM.png、强制 eips、电量上报在 ss_update_once.sh / render 侧。
 export PATH=/usr/sbin:/usr/bin:/bin:/sbin:$PATH
 
+# 【2026-11-09 01:2x 第三处修正】`20261109.2` 里我又自作主张加了 `mkdir` 互斥锁，
+# 而 fanzhh 原版从不用锁。01:09 一次 do_update 未完成 → 锁残留 → 01:20 主循环被挡死
+# （本地日志「已有更新进行中，跳过本轮」不上报 ntfy，故远程看到零活动）。
+# 已移除锁、改用 SS_LAST 时间戳去重；主循环 last 改回 fanzhh 的内存变量并触发即推进。
 # 脚本版本号：每次实质改动都 +1，供 deploy_v5.sh 自证遥测 grep 确认设备上跑的是哪一版。
-SVER="20261109.2"
+SVER="20261109.3"
 
 CONF=/mnt/us/dash/ss_config.sh
 [ -f "$CONF" ] && . "$CONF"
@@ -199,14 +206,25 @@ set_rtc_wakeup() {
 #   进程便永远卡在 lipc-wait-event 里 → 00:40 槽位设备零活动（ntfy 铁证）。
 #   11-08 09:00/10:00「整点全不醒」也是同一根因。本次把缺的这一半补齐。
 try_update() {
-    # 原子锁（mkdir）：主循环与事件回调可能同时到点，避免并发取图 / 重复 eips。
-    # 用目录而非文件，mkdir 在 ash 下是原子的；启动时 rm -rf 清理残留。
-    if mkdir /tmp/ss_updating 2>/dev/null; then
-        do_update
-        rmdir /tmp/ss_updating 2>/dev/null
-    else
-        log "已有更新进行中，跳过本轮"
+    # 【2026-11-09 01:2x 修正】移除 `mkdir /tmp/ss_updating` 原子锁。
+    # 这是我自己加的、fanzhh 原版完全没有的东西，且造成了实锤故障：
+    #   01:09:45 一次 do_update 卡在取图阶段（只有 wifi=CONNECTED，无 eips OK、
+    #   无电量上报、SS_LAST 未打点）→ rmdir 永不执行 → 锁残留 →
+    #   01:20 主循环触发时 mkdir 失败，只写本地日志「已有更新进行中，跳过本轮」
+    #   → 画面整点不刷新，且此后永久卡死（本地日志不上报 ntfy，故远程零活动）。
+    # fanzhh dash-daemon.sh L206-209 主循环与 L127 事件回调都直接调更新脚本，无锁；
+    # 靠脚本幂等 + 主循环「内存变量 last」推进计时，单次卡住不会拖死后续。
+    # 此处改用 **SS_LAST 时间戳** 做轻量去重（时间戳不是锁，永不残留）：
+    # ⚠️ ash 函数变量是全局的，必须用独立前缀，否则会覆盖主循环的内存变量 LAST，
+    #    导致主循环刚推进的计时被文件里的旧值冲掉、下一轮又重复触发。
+    _TU_NOW=$(date +%s)
+    _TU_LAST=$(cat "$SS_LAST" 2>/dev/null)
+    case "$_TU_LAST" in ''|*[!0-9]*) _TU_LAST=0 ;; esac
+    if [ $(( _TU_NOW - _TU_LAST )) -lt 60 ]; then
+        log "距上次更新 $(( _TU_NOW - _TU_LAST ))s < 60s，跳过重复触发（防并发取图/eips）"
+        return 0
     fi
+    do_update
 }
 
 handle_event() {
@@ -257,6 +275,7 @@ phase2_loop() {
     # 清除 11/8 方案B 残留的 preventScreenSaver=1（该标志进程被杀后仍持久，
     # 不复位会禁用「按电源键进待机」）。本方案从不设置它，仅做一次性清理。
     lipc-set-prop com.lab126.powerd preventScreenSaver 0 2>/dev/null
+    # 仅清理 20261109.2 遗留的 mkdir 锁目录；本版不使用任何互斥锁，勿误解。
     rm -rf /tmp/ss_updating 2>/dev/null
     startup_refresh_if_stale
     set_rtc_wakeup
@@ -267,22 +286,29 @@ phase2_loop() {
     WATCHER=$!
     trap 'kill "$WATCHER" 2>/dev/null' EXIT INT TERM
 
-    # 前台主循环（fanzhh L200-212）：挂钟判断，与事件完全解耦。
+    # 前台主循环（严格照抄 fanzhh L200-212）：挂钟判断，与事件完全解耦。
+    # ★ last 是【内存变量】，启动时读一次 SS_LAST 后由主循环自己推进，
+    #   不每轮读文件、不依赖 do_update 是否成功打点。
+    #   20261109.2 曾每轮 cat SS_LAST：01:09 那次 do_update 卡住未打点 →
+    #   主循环会每 60s 反复触发同一轮，且永远认为「没更新」。fanzhh 原版不是这样。
+    #   与事件回调可能重复的问题，由 try_update 的 SS_LAST 60s 时间戳去重兜住。
     # INTERVAL 由槽位数推出：当前 SS_SLOT_MINUTES="0 20 40" 共 3 槽 → 3600/3=1200s。
     SLOT_COUNT=0
     for s in $SS_SLOT_MINUTES; do SLOT_COUNT=$(( SLOT_COUNT + 1 )); done
     [ "$SLOT_COUNT" -lt 1 ] && SLOT_COUNT=1
     INTERVAL=$(( 3600 / SLOT_COUNT ))
-    log "主循环启动：POLL=60s，INTERVAL=${INTERVAL}s（槽位 ${SS_SLOT_MINUTES}）"
+    LAST=$(cat "$SS_LAST" 2>/dev/null)
+    case "$LAST" in ''|*[!0-9]*) LAST=0 ;; esac
+    log "主循环启动：POLL=60s，INTERVAL=${INTERVAL}s，last=${LAST}（槽位 ${SS_SLOT_MINUTES}）"
     while true; do
         NOW=$(date +%s)
-        LAST=$(cat "$SS_LAST" 2>/dev/null)
-        case "$LAST" in ''|*[!0-9]*) LAST=0 ;; esac
         if [ $(( NOW - LAST )) -ge "$INTERVAL" ]; then
             log "主循环：距上次更新 $(( NOW - LAST ))s >= ${INTERVAL}s → 触发更新"
+            # 【fanzhh L208 原样】先推进 last 再执行，无论本次更新成败都不重复重试。
+            LAST=$NOW
             try_update
         fi
-        # 挂钟判断，故 sleep 被 suspend 冻结也不影响正确性；醒来后按 SS_LAST 判定。
+        # 挂钟判断，故 sleep 被 suspend 冻结也不影响正确性；醒来后按内存 last 判定。
         sleep 60
     done
 }
