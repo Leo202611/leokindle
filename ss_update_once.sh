@@ -179,6 +179,13 @@ case " $SS_HOURS " in *" $HH "*) FN=$(printf 'ss_%02d_%02d.png' "$HH" "$SM") ;; 
 [ -n "$FN" ] || FN="ss_latest.png"
 log "本地 $HH:$M 时，槽位分钟 $SM，目标图: ${FN}（更新点: ${SS_HOURS}）"
 
+# 更新期间阻止设备提前重新挂起：后台 do_update 若在「重连 WiFi → 拉图 → eips」途中被
+# powerd 重新挂起，会卡在 suspended 态（WiFi 还开着、进程未退出），eips 写不进帧缓冲，
+# 画面便滞留旧时刻（21:20 实测曾因此卡在 21:00）。用 deferSuspend 把「下一次自动挂起」
+# 延后 150s，覆盖整段更新；更新跑完后令其自然失效，再交还 powerd 正常挂起（下一轮
+# readyToSuspend 照常设 rtcWakeup）。deferSuspend 只延迟自动挂起，不禁用电源键手动休眠。
+lipc-set-prop -i com.lab126.powerd deferSuspend 150 2>/dev/null
+
 # ---- 2. 按需开 / 恢复 WiFi ----
 # 阶段2 深睡唤醒后 WiFi 处于断连态，必须主动重连（5.16.x suspended 态无法自动重连，
 # koreader-live-sleepscreen / fanzhh 均已证实）；wifi_restore() 见 ss_config.sh。
