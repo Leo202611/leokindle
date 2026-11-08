@@ -20,14 +20,16 @@
 #                               "Kindle powerd repeats readyToSuspend on purpose.
 #                                Always set the RTC wakeup on every readyToSuspend."）
 #       * exitingScreenSaver → 恢复 WiFi
-#     不调 preventScreenSaver、不自己 echo mem、不写 wakealarm——彻底避免与 powerd 竞争。
+#     不调 preventScreenSaver、不自己 echo mem；但【23:40 复盘更正】本固件 lipc rtcWakeup
+#     相对秒数不真正唤醒，故在 readyToSuspend/wakeupFromSuspend 改为写内核级绝对
+#     /sys/class/rtc/rtc0/wakealarm 作为真正唤醒源（lipc rtcWakeup 仅作属性对齐兜底）。
 #   WiFi 开/关由 ss_update_once.sh 内部按 WIFI_WAS 自行管理，调度器不重复操作。
 #   计时一律用挂钟 date +%s（BusyBox sleep 基于 CLOCK_MONOTONIC，休眠时被冻结）。
 #   每次挂起/唤醒/更新都写日志，便于回溯「哪一轮没醒」。
 export PATH=/usr/sbin:/usr/bin:/bin:/sbin:$PATH
 
 # 脚本版本号：每次实质改动都 +1，便于从 ntfy 遥测确认设备上跑的是哪一版。格式 YYYYMMDD.N。
-SVER="20261108.5"
+SVER="20261108.6"
 
 CONF=/mnt/us/dash/ss_config.sh
 [ -f "$CONF" ] && . "$CONF"
@@ -163,15 +165,37 @@ secs_to_next_slot() {
 }
 
 set_rtc_wakeup() {
-    # 只在 readyToSuspend 等 powerd 接受 rtcWakeup 的状态调用（此固件 rtcWakeup 仅在该态有效）。
-    # 相对秒数；每轮 readyToSuspend 都设，吃满 powerd 重复事件，避免被 rtcWakeup=0 覆盖。
+    # 【关键修复 2026-11-08 23:40 睡死(三)】本固件（Kindle 8 / 5.16.2.1.1）的
+    #   lipc-set-prop com.lab126.powerd rtcWakeup <相对秒> 高层抽象【不真正写内核 RTC】——
+    #   ntfy 铁证：23:37:22 设 RTCSET 159s 指向 23:40:01，设备确已 suspend（lipc-wait-event -s
+    #   被冻结），但 23:40 既无唤醒、也无 159s 超时触发 → rtcWakeup 没把它叫醒。
+    # 真入口是内核级【绝对 wakealarm】：写「绝对 epoch 秒」到 /sys/class/rtc/rtc0/wakealarm，
+    # 硬件 RTC 中断会真正响应（上游 zpetterd/kndl-online-screensaver 的 clear_rtc_wakeup
+    # 即以此为准）。故此处改为：先 lipc rtcWakeup（保持属性一致，防 powerd 若读它写成 0），
+    # 再写 sysfs 绝对 wakealarm 作为真正唤醒源。
     SECS=$(secs_to_next_slot)
-    if lipc-set-prop -i com.lab126.powerd rtcWakeup "$SECS" 2>/dev/null; then
-        log "rtcWakeup 已设 ${SECS}s（下次槽位）"
-        dbg "RTCSET ${SECS}s"
-    else
-        log "rtcWakeup 设置失败（本轮回退，等下次 readyToSuspend 再设）"
-        dbg "RTCFAIL"
+    EPOCH=$(( $(date +%s) + SECS ))
+    ARMED=0
+    # lipc 路径：与意图保持一致，失败静默（本固件可能无效，但不干扰）
+    lipc-set-prop -i com.lab126.powerd rtcWakeup "$SECS" >/dev/null 2>&1
+    for RTC in rtc0 rtc1; do
+        WAKE="/sys/class/rtc/$RTC/wakealarm"
+        [ -w "$WAKE" ] || continue
+        # 确保该 RTC 是允许的 wakeup source
+        WP="/sys/class/rtc/$RTC/device/power/wakeup"
+        [ -w "$WP" ] && echo enabled > "$WP" 2>/dev/null
+        # 先清旧闹钟（部分内核要求先写 0 才能重设未触发的闹钟），再写绝对 epoch 秒
+        echo 0 > "$WAKE" 2>/dev/null
+        if echo "$EPOCH" > "$WAKE" 2>/dev/null; then
+            log "wakealarm 已设 ${EPOCH}（${SECS}s 后，下次槽位）"
+            dbg "RTCSET ${SECS}s sysfs=$RTC"
+            ARMED=1
+            break
+        fi
+    done
+    if [ "$ARMED" -eq 0 ]; then
+        log "sysfs wakealarm 不可用，仅 lipc rtcWakeup=${SECS}s（本固件可能无效，等下次再设）"
+        dbg "RTCFAIL sysfs lipc=${SECS}s"
     fi
 }
 
@@ -208,10 +232,9 @@ wait_for_suspend() {
                 set_rtc_wakeup
                 ;;
             wakeupFromSuspend*|resuming*)
-                # 唤醒后抢先武装（部分固件 wakeupFromSuspend 态也接受 rtcWakeup，失败静默）
-                SECS=$(secs_to_next_slot)
-                lipc-set-prop -i com.lab126.powerd rtcWakeup "$SECS" >/dev/null 2>&1
-                dbg "WAKE-arm ${SECS}s"
+                # 唤醒后抢先武装（新 sysfs wakealarm，失败静默；主臂仍在下一轮 readyToSuspend）
+                set_rtc_wakeup
+                dbg "WAKE-arm"
                 ;;
         esac
     done
