@@ -81,7 +81,7 @@ say() {
 # 部署自证遥测（2026-11-08）：把「设备到底拉到了哪一版」上报 ntfy，彻底消除
 # 「改了半天其实没部署上去 / GitHub CDN 缓存旧版」的盲区。复用电量上报同款 ntfy POST
 # 通道（已验证可达），最好努力、失败静默。
-DEPLOY_VER="20261109.3"
+DEPLOY_VER="20261109.4"
 DEPLOY_TOPIC="k8dash_deploy_4f2a"
 dep_report() {
     curl -sL -k -m 5 -X POST -H "Title: deploy" --data-binary "$1" "https://ntfy.sh/$DEPLOY_TOPIC" >/dev/null 2>&1
@@ -178,6 +178,22 @@ for f in $SH_FILES; do pull_sh "$f"; done
 
 # 部署自证：上报 SRV_OK 与关键脚本是否含新版 SVER（设备到底拉到没有，一目了然）
 dep_report "deploy v$DEPLOY_VER SRV_OK=$SRV_OK updSVER=$(grep -c 'SVER=\"20261108.3\"' "$DST/ss_update_once.sh" 2>/dev/null) schedSVER=$(grep -c 'SVER=\"20261109.3\"' "$DST/ss_scheduler.sh" 2>/dev/null) wifiToggle=$(grep -c 'wirelessEnable 0' "$DST/ss_config.sh" 2>/dev/null)"
+
+# ---- 1.5 【关键动作前置 · 2026-11-09 01:4x】----
+# 01:39 那次在线更新卡在后面第 2 步的 GitHub HTTPS 拉图（curl -m 40），
+# 只有 "deploy v..." 没有 "deploy DONE"，末尾 6.5 的 ss_enable.sh quick 从未执行：
+# 新版 ss_scheduler.sh 虽已下载到 /mnt/us/dash，/tmp/dashss 里跑的仍是旧实例，
+# 01:40 槽位因此没更新。故把「启用 + 完成自证」提到任何可选拉图之前，
+# 保证关键动作不被后续网络步骤拖死。
+# 注意：此处用 $DST/ss_enable.sh（刚拉下来的），不依赖后面第 3 步才写的 $EXT/bin。
+case "$1" in start|land|port) DEP_BOOT="$1" ;; *) DEP_BOOT="" ;; esac
+if [ -z "$DEP_BOOT" ] && [ -f "$DST/ss_enable.sh" ] && [ ! -f "$DST/ss_no_auto" ]; then
+    sh "$DST/ss_enable.sh" quick >> "$LOG" 2>&1
+    EARLY_ENABLED=1
+    dep_report "deploy DONE v$DEPLOY_VER EARLY schedSVER=$(grep -c 'SVER=\"20261109.3\"' "$DST/ss_scheduler.sh" 2>/dev/null) enabled=$([ -f "$DST/ss_enabled" ] && echo yes || echo no)"
+else
+    EARLY_ENABLED=0
+fi
 
 # ---- 2. 拉图（电脑 HTTP -> GitHub 当小时 -> GitHub index 最新）----
 # 第三层很重要：Kindle 设备时钟可能不准（校时失败时），
@@ -411,8 +427,9 @@ fi
 # 容易出现「在线更新点过了，却找不到启用定时更新」。这里让「在线更新(WiFi)」
 # 点一次就把屏保定时链路装好并拉起；菜单更新后用户再打开即可看到新项。
 # 不想自动启用：在设备上建一个空文件 /mnt/us/dash/ss_no_auto 即可。
-if [ -z "$BOOT" ] && [ -f "$DST/ss_enable.sh" ] && [ ! -f "$DST/ss_no_auto" ]; then
-    say "---- 自动启用待机画面定时更新(每整点) ----"
+if [ "${EARLY_ENABLED:-0}" != "1" ] && [ -z "$BOOT" ] && [ -f "$EXT/bin/ss_enable.sh" ] && [ ! -f "$DST/ss_no_auto" ]; then
+    # 仅当 1.5 的前置启用没跑成时才走这里（兜底）。正常情况已在拉完脚本后启用完毕。
+    say "---- 兜底启用待机画面定时更新 ----"
     sh "$EXT/bin/ss_enable.sh" quick >> "$LOG" 2>&1
     if [ -f "$DST/ss_enabled" ]; then
         say "OK 已自动启用（服务 dashss）；想取消自动启用可建 $DST/ss_no_auto"
@@ -421,5 +438,6 @@ if [ -z "$BOOT" ] && [ -f "$DST/ss_enable.sh" ] && [ ! -f "$DST/ss_no_auto" ]; t
     fi
 fi
 
-dep_report "deploy DONE v$DEPLOY_VER updSVER=$(grep -c 'SVER=\"20261108.3\"' "$DST/ss_update_once.sh" 2>/dev/null) schedSVER=$(grep -c 'SVER=\"20261109.3\"' "$DST/ss_scheduler.sh" 2>/dev/null) enabled=$([ -f "$DST/ss_enabled" ] && echo yes || echo no)"
+# TAIL ≠ DONE：DONE 在 1.5 前置启用后立即发出；TAIL 表示脚本一路跑到了末尾。
+dep_report "deploy TAIL v$DEPLOY_VER updSVER=$(grep -c 'SVER=\"20261108.3\"' "$DST/ss_update_once.sh" 2>/dev/null) schedSVER=$(grep -c 'SVER=\"20261109.3\"' "$DST/ss_scheduler.sh" 2>/dev/null) early=${EARLY_ENABLED:-0}"
 say "===== 安装完成（全程 WiFi，未使用 USB）====="
