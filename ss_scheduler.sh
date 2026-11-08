@@ -27,7 +27,7 @@
 export PATH=/usr/sbin:/usr/bin:/bin:/sbin:$PATH
 
 # 脚本版本号：每次实质改动都 +1，便于从 ntfy 遥测确认设备上跑的是哪一版。格式 YYYYMMDD.N。
-SVER="20261108.3"
+SVER="20261108.4"
 
 CONF=/mnt/us/dash/ss_config.sh
 [ -f "$CONF" ] && . "$CONF"
@@ -168,46 +168,57 @@ set_rtc_wakeup() {
     SECS=$(secs_to_next_slot)
     if lipc-set-prop -i com.lab126.powerd rtcWakeup "$SECS" 2>/dev/null; then
         log "rtcWakeup 已设 ${SECS}s（下次槽位）"
+        dbg "RTCSET ${SECS}s"
     else
         log "rtcWakeup 设置失败（本轮回退，等下次 readyToSuspend 再设）"
+        dbg "RTCFAIL"
     fi
 }
 
-# 后台触发取图刷屏，避免阻塞事件循环导致 readyToSuspend 来不及设闹钟（旧版会「下一次整点不醒」）。
-# 锁文件含两样：PID（/tmp/ss_updating）+ 启动时间戳（/tmp/ss_updating.ts）。
-# 关键鲁棒性（2026-11-08 补强）：Kindle 在 RTC 唤醒后若很快重新挂起，后台 do_update 会被
-# 「冻结」在 suspended 态（WiFi 仍开着、PID 仍存活，kill -0 为真）。普通 PID 锁会误判「仍在跑」
-# 从而跳过本回合乃至之后所有整点的更新。故额外用时间戳判定：进程存活但已运行超过
-# SS_UPD_MAXS 秒（远超正常 40–60s 的取图耗时，典型是跨整点被挂起冻结了数千秒），视为僵死，
-# 直接 kill -9 后重来。这样无论固件是「唤醒后长驻数十秒」还是「唤醒后秒级挂起」，每小时都可靠更新：
-#   前者：do_update 在挂起前跑完并删锁，下个整点正常触发；
-#   后者：冻结进程在下一整点被时间戳判定为僵死清掉，新更新照常进行。
-SS_UPD_MAXS="${SS_UPD_MAXS:-150}"
-trigger_update() {
-    if [ -f /tmp/ss_updating ]; then
-        OPID=$(cat /tmp/ss_updating 2>/dev/null)
-        TS=$(cat /tmp/ss_updating.ts 2>/dev/null)
+# 2026-11-08 23:00 复盘：原 trigger_update()（后台子进程 + PID/时间戳锁）已弃用。
+# 阶段2 改为「主循环前台调用 do_update + wait_for_suspend 单次 lipc-wait-event 循环」，
+# 不再依赖 -m 常驻监听，天然抗 suspend/resume，逻辑更简单也更稳。详见下方 phase2_loop。
+
+
+
+# 电池友好的等待 + 挂起编排（对齐上游 zpetterd/kndl-online-screensaver 的 wait_for_suspend）：
+# 用「单次 lipc-wait-event -s REMAINING」循环，而非 -m 常驻监听。
+# 【关键修复 2026-11-08 23:00 睡死根因】5.16.x 下 lipc 的 -m 长连接会在 suspend/resume 后被
+# 内核 / lipc-daemon 静默丢弃（连接失效），导致 RTC 唤醒后脚本永远收不到 wakeupFromSuspend、
+# 既不更新也不重设闹钟，设备随后永久睡死。-s 单次模式每轮重建连接，天然抗 suspend/resume。
+# 每次 readyToSuspend（powerd 即将挂起）用「距下次槽位的剩余秒数」武装 RTC；
+# 唤醒（wakeupFromSuspend/resuming）时再次武装（best-effort），随后循环直到 REMAINING<=0 才返回，
+# 回到主循环触发取图刷屏。
+wait_for_suspend() {
+    WAIT_SECONDS=$1
+    [ "$WAIT_SECONDS" -gt 0 ] 2>/dev/null || WAIT_SECONDS=60
+    END=$(( $(date +%s) + WAIT_SECONDS ))
+    while true; do
         NOW=$(date +%s)
-        if [ -n "$OPID" ] && kill -0 "$OPID" 2>/dev/null; then
-            if [ -n "$TS" ] && [ $(( NOW - TS )) -gt "$SS_UPD_MAXS" ]; then
-                log "trigger_update：更新进程(pid=$OPID)已运行 $(( NOW - TS ))s，疑似被挂起冻结，kill -9 后重来"
-                kill -9 "$OPID" 2>/dev/null
-                rm -f /tmp/ss_updating /tmp/ss_updating.ts
-            else
-                log "trigger_update：已有更新在跑(pid=$OPID)，跳过"
-                return 0
-            fi
-        else
-            rm -f /tmp/ss_updating /tmp/ss_updating.ts
+        REMAINING=$(( END - NOW ))
+        if [ "$REMAINING" -le 0 ]; then
+            dbg "WAITDONE rem=${REMAINING}"
+            break
         fi
-    fi
-    ( SS_FORCE_EIPS=1 SS_SNAP=1 do_update; rm -f /tmp/ss_updating /tmp/ss_updating.ts ) &
-    echo $! > /tmp/ss_updating
-    echo "$(date +%s)" > /tmp/ss_updating.ts
+        dbg "WAIT rem=${REMAINING} (arm rtc on readyToSuspend)"
+        EVENT=$(lipc-wait-event -s "$REMAINING" com.lab126.powerd \
+            readyToSuspend,wakeupFromSuspend,resuming 2>/dev/null)
+        case "$EVENT" in
+            readyToSuspend*)
+                set_rtc_wakeup
+                ;;
+            wakeupFromSuspend*|resuming*)
+                # 唤醒后抢先武装（部分固件 wakeupFromSuspend 态也接受 rtcWakeup，失败静默）
+                SECS=$(secs_to_next_slot)
+                lipc-set-prop -i com.lab126.powerd rtcWakeup "$SECS" >/dev/null 2>&1
+                dbg "WAKE-arm ${SECS}s"
+                ;;
+        esac
+    done
 }
 
 phase2_loop() {
-    log "===== 阶段2 事件驱动（powerd 原生挂起 + readyToSuspend 每轮设 rtcWakeup, SS_RTC=$SS_RTC）====="
+    log "===== 阶段2 事件驱动（powerd 原生挂起 + 单次 lipc-wait-event 循环, SS_RTC=$SS_RTC）====="
     dbg "BOOT v$SVER phase2 rtc=$SS_RTC"
     # 清除旧版（方案B）可能残留的 preventScreenSaver=1：该 lipc 标志在进程被杀后仍持久，
     # 不复位则「按电源键进待机」继续被禁用。方案C 从不设置它，此处仅做一次性清理。
@@ -215,60 +226,32 @@ phase2_loop() {
     rm -f /tmp/ss_updating
     startup_refresh_if_stale
     while true; do
-        # -m 进入 monitor 模式持续吐事件，管道逐行交给 case 处理。
-        # 关键修复：取图刷屏（trigger_update）一律后台跑，事件循环本身不被阻塞，
-        # 这样 readyToSuspend 一到就能立刻设好下次 RTC 闹钟，杜绝「下一次整点不醒」。
-        lipc-wait-event -m com.lab126.powerd \
-            goingToScreenSaver,wakeupFromSuspend,readyToSuspend,exitingScreenSaver \
-            | while read EV; do
-            dbg "$EV"
-            case "$EV" in
-                goingToScreenSaver*)
-                    # 进待机事件：不在此触发取图（2026-11-08 复盘修复）。
-                    # 旧逻辑在此跑 do_update，但「按电源键进待机」时 powerd 随即挂起，
-                    # 后台取图会被冻结在 suspended 态（WiFi 还开着），直到下一个 RTC 唤醒
-                    # 才恢复；而恢复时 wakeupFromSuspend 因 /tmp/ss_updating 锁未释放而
-                    # 跳过本回合更新 -> 「手动休眠一次后，后续整点不更新」的真实 bug。
-                    # 实际无需在此取图：ss_update_once.sh 每次成功更新都已把最新图写进
-                    # linkss/screensavers/bg_ss00.png，powerd 在 suspend 那一刻由 linkss
-                    # 重读该文件显示，即用户按电源休眠看到的就是最近一次自动更新的画面
-                    # （最多落后一个槽位，待机画面可接受）。真正的定时更新由
-                    # wakeupFromSuspend 负责，本分支保持空操作即可。
-                    log "事件 goingToScreenSaver：挂起即由 linkss 显示当前 bg_ss00.png，无需取图"
-                    ;;
-                wakeupFromSuspend*)
-                    # 【关键修复 2026-11-08 22:00 实测冻结】RTC 唤醒后必须先「同步」延后自动挂起，
-                    # 且必须在本事件处理里（前台、第一时间）设，不能只放在后台 do_update 内。
-                    # 旧逻辑 deferSuspend 在后台子进程里设，启动有延迟；powerd 在「唤醒→恢复→重新
-                    # 挂起」周期里可能于后台进程设之前就完成挂起，把 do_update 冻在 suspended 态
-                    # （WiFi 仍开、进程未退出）→ eips 写不进帧缓冲、电量也不上报 → 屏保滞留旧时刻。
-                    # 这里在事件回调最开头同步设 240s（覆盖最坏 WiFi dance ~150s + 拉图 + eips 余量），
-                    # 锁住挂起直到整段更新跑完；更新跑完 deferSuspend 自然失效，交还 powerd 正常挂起。
-                    lipc-set-prop -i com.lab126.powerd deferSuspend 240 2>/dev/null
-                    # RTC 到点 / 手动唤醒：等电源键抖动平息，刷一次最新图。
-                    # 同时尽力早设闹钟（部分固件 wakeupFromSuspend 态也接受 rtcWakeup，
-                    # 失败静默，交给紧随的 readyToSuspend 兜底——循环已不被阻塞故能及时设）。
-                    log "事件 wakeupFromSuspend：唤醒后刷一次"
-                    sleep 2
-                    SECS=$(secs_to_next_slot)
-                    lipc-set-prop -i com.lab126.powerd rtcWakeup "$SECS" >/dev/null 2>&1
-                    trigger_update
-                    ;;
-                readyToSuspend*)
-                    # 即将挂起：每轮必设下次 RTC 唤醒（不设防抖）。WiFi 由 do_update 自管。
-                    set_rtc_wakeup
-                    ;;
-                exitingScreenSaver*)
-                    # 用户按电源退出待机：恢复 WiFi 以便后续联网（do_update 也会按需重连）。
-                    log "事件 exitingScreenSaver：恢复 WiFi"
-                    lipc-set-prop com.lab126.cmd wirelessEnable 1 2>/dev/null
-                    lipc-set-prop com.lab126.wifid enable 1 2>/dev/null
-                    ;;
-            esac
-        done
-        # lipc-wait-event 异常退出（极少见）时回到循环顶部重启监听，避免调度器静默死亡。
-        log "lipc-wait-event 退出，2s 后重启监听"
-        sleep 2
+        STATUS=$(lipc-get-prop com.lab126.powerd status 2>/dev/null)
+        case "$STATUS" in
+            *Screen*Saver*|*Ready*|*Suspended*)
+                # 空闲（屏保/待机/已挂起）：先取图刷屏，再武装 RTC 等待到下次槽位。
+                # 第一道锁：更新期间阻止提前重新挂起（覆盖 WiFi 硬切重连+拉图+eips）。
+                # 注：ss_update_once.sh 内部也会设一次 deferSuspend，双保险。
+                log "主循环：空闲($STATUS) → 取图刷屏"
+                dbg "IDLE upd"
+                lipc-set-prop -i com.lab126.powerd deferSuspend 240 2>/dev/null
+                SS_SNAP=1 do_update
+                WAIT=$(secs_to_next_slot)
+                log "主循环：等待 ${WAIT}s 到下次槽位（期间允许挂起）"
+                dbg "WILLWAIT ${WAIT}s"
+                wait_for_suspend "$WAIT"
+                ;;
+            *Active*)
+                # 用户正在使用：不要抢挂起，等其进屏保再接管（每 180s 轮询一次状态）
+                log "主循环：Active → 等 goingToScreenSaver（180s）"
+                lipc-wait-event -s 180 com.lab126.powerd goingToScreenSaver 2>/dev/null
+                ;;
+            *)
+                log "主循环：未知状态($STATUS) → 等 60s"
+                wait_for_suspend 60
+                ;;
+        esac
+        sleep 1
     done
 }
 
