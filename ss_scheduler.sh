@@ -41,6 +41,19 @@ RUN_DIR=/tmp/dashss
 
 log() { echo "[$(date +'%m-%d %H:%M:%S')] [sched] $*" >> "$SS_LOG" 2>/dev/null; }
 
+# 【临时遥测 2026-11-08】每次事件把关键电源/WiFi 状态上报 ntfy，便于 Mac 端远程定位
+# 22:20 仍失败的根因（RTC 是否真的唤醒、rtcWakeup 设上没有、卡在 freeze 还是 sleep-death）。
+# 最好努力、失败静默，绝不干扰主逻辑。稳定后整段可删。
+DBG_TOPIC="k8dash_dbg_9c1e"
+dbg() {
+    EV="$1"
+    DF=$(lipc-get-prop com.lab126.powerd deferSuspend 2>/dev/null)
+    RT=$(lipc-get-prop com.lab126.powerd rtcWakeup 2>/dev/null)
+    CM=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)
+    MSG="$(date +'%m-%d %H:%M:%S') EV=$EV defer=${DF:-?} rtc=${RT:-?} wifi=${CM:-?} slot=$(date +%H:%M)"
+    curl -sL -k -m 5 -X POST -H "Title: sched-debug" --data-binary "$MSG" "https://ntfy.sh/$DBG_TOPIC" >/dev/null 2>&1
+}
+
 do_update() {
     log "---- 开始更新 ----"
     T0=$(date +%s)
@@ -203,6 +216,7 @@ phase2_loop() {
         lipc-wait-event -m com.lab126.powerd \
             goingToScreenSaver,wakeupFromSuspend,readyToSuspend,exitingScreenSaver \
             | while read EV; do
+            dbg "$EV"
             case "$EV" in
                 goingToScreenSaver*)
                     # 进待机事件：不在此触发取图（2026-11-08 复盘修复）。

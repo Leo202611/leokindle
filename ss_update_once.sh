@@ -83,6 +83,13 @@ log() {
     echo "$*"
 }
 
+# 【临时遥测 2026-11-08】上报 do_update 关键节点到 ntfy，配合调度器遥测定位 22:20 失败根因。
+DBG_TOPIC="k8dash_dbg_9c1e"
+dbg() {
+    MSG="$(date +'%m-%d %H:%M:%S') [upd] $*"
+    curl -sL -k -m 5 -X POST -H "Title: upd-debug" --data-binary "$MSG" "https://ntfy.sh/$DBG_TOPIC" >/dev/null 2>&1
+}
+
 # 日志限长：避免每天 5 次无限追加写 FAT（首次运行文件还不存在，先判存在）
 SZ=0
 [ -f "$SS_LOG" ] && SZ=$(wc -c < "$SS_LOG" 2>/dev/null)
@@ -159,6 +166,7 @@ report_batt() {
 }
 
 log "===== 单次更新待机画面 ====="
+dbg "START"
 
 # ---- 1. 计算槽位文件名 ----
 # 更新点上取该槽位图 ss_HH.png（内容为当次整点的画面）。
@@ -178,6 +186,7 @@ FN=""
 case " $SS_HOURS " in *" $HH "*) FN=$(printf 'ss_%02d_%02d.png' "$HH" "$SM") ;; esac
 [ -n "$FN" ] || FN="ss_latest.png"
 log "本地 $HH:$M 时，槽位分钟 $SM，目标图: ${FN}（更新点: ${SS_HOURS}）"
+dbg "plan HH=$HH M=$M SM=$SM FN=$FN"
 
 # 更新期间阻止设备提前重新挂起：后台 do_update 若在「重连 WiFi → 拉图 → eips」途中被
 # powerd 重新挂起，会卡在 suspended 态（WiFi 还开着、进程未退出），eips 写不进帧缓冲，
@@ -203,6 +212,7 @@ else
     log "WiFi 无法恢复（cmState=$ST），本次更新将跳过下载"
 fi
 log "下载前 cmState=$ST"
+dbg "wifi=$ST"
 
 # ---- 3. 拉图：GitHub 槽位 -> CDN -> 电脑 HTTP -> 最新图兜底 ----
 GOT=0
@@ -291,6 +301,7 @@ if [ "$GOT" = "1" ]; then
             *)
                 eips -f -g "$TMP" >> "$SS_LOG" 2>&1
                 log "已刷屏 eips -f -g（仅一次整屏刷新）"
+                dbg "eips OK"
                 ;;
         esac
     fi
@@ -321,6 +332,7 @@ if [ "$GOT" = "1" ]; then
     log "更新成功，用时 $(( $(date +%s) + SS_UPDATE_TIMEOUT - DEADLINE ))s"
 else
     log "更新失败，保留旧画面（省电：不重试）"
+    dbg "FAIL"
 fi
 
 # ---- 4.5 电量搭车上报（WiFi 此刻仍开着，零额外唤醒）----
