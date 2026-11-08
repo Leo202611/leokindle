@@ -19,21 +19,28 @@
 #      fanzhh dash-daemon.sh L9-11 明确证伪（powerd 休眠末段会用 rtcWakeup 覆盖它，不会唤醒）；
 #      zpetterd 的 sysfs 只用于进程退出时 echo 0 清理，从不用来设闹钟 —— 11/8 误读了这点。
 #   ④ 在 readyToSuspend 回调里塞 ntfy POST（dbg() 含 curl -m 5）：upstream 回调零网络 I/O。
-# 现架构（= 11/7 基线 = upstream 实证写法）：
-#   * 无限阻塞等单个事件（不带 -s/-m），每轮重建连接，天然抗 suspend/resume 断连；
-#     计时一律用挂钟 date +%s，绝不用 sleep 累计（BusyBox sleep 休眠时被冻结）。
-#   * readyToSuspend：每轮必设 lipc rtcWakeup（连设 4 次、不做防抖）+ 关 WiFi 进深睡。
-#   * wakeupFromSuspend：deferSuspend 防更新途中被挂起 → 取图刷屏 → 立刻 deferSuspend 0
-#     → 兜底再设一次闹钟 + 关 WiFi，形成「唤醒→顺手设下一次」自闭环，单点漏设不级联。
-#   * goingToScreenSaver / 启动：各兜底设一次闹钟，堵住「设备已挂起时才拉起进程」的空窗。
-#   * 绝不写 sysfs wakealarm、不调 preventScreenSaver、不自己 echo mem、事件回调零网络 I/O。
-# 【唯一保留的 11/8 新需求】闹钟相对秒数改由 secs_to_next_slot() 按 SS_SLOT_MINUTES
-#   （当前 "0 20 40" = 每 20 分钟）计算；真实分钟时间戳 ss_HH_MM.png、强制 eips、
-#   电量搭车上报都在 ss_update_once.sh / render 侧，不属本文件改动范围。
+# 【2026-11-09 00:4x 再修正】上面 11/7 基线只抄了 fanzhh 的「一半」：
+#   它只有「单进程无限阻塞等事件」，缺了 fanzhh L196-212 的
+#   「后台 watch_events & + 前台主循环每 60s 用挂钟 date +%s 独立判到点更新」。
+#   缺这一半 → 设备停在 Active/GUI（如刚点完 KUAL 5）时收不到 readyToSuspend、
+#   启动兜底闹钟在该态又被 powerd 拒绝，进程便永久卡死：11-08 09/10 点睡死、
+#   11-09 00:40 零活动（ntfy 铁证）均此因。本次补齐双进程，仍逐条照抄源码。
+# 现架构（= fanzhh dash-daemon.sh 完整写法）：
+#   * 【前台主循环·核心保障】每 POLL=60s 用挂钟 now-last >= INTERVAL 独立触发更新，
+#     完全不依赖 RTC 闹钟 / powerd 事件；sleep 被 suspend 冻结也不影响（醒来按挂钟判定）。
+#   * 【后台 watch_events】-m 常驻 + 管道 while read + 外层 while true 断线重连；
+#     readyToSuspend 设闹钟+关 WiFi、wakeupFromSuspend 更新+兜底设闹钟、goingToScreenSaver 设闹钟。
+#   * 两路用 mkdir 原子锁 /tmp/ss_updating 去重，避免并发取图 / 重复 eips。
+#   * 设闹钟只用 lipc rtcWakeup 相对秒（连设 4 次、不防抖）；绝不写 sysfs wakealarm、
+#     不调 preventScreenSaver、不自己 echo mem、事件回调零网络 I/O。
+#   * 计时一律挂钟 date +%s，绝不用 sleep 累计（BusyBox sleep 休眠时被冻结）。
+# 【保留的 11/8 新需求】SS_SLOT_MINUTES="0 20 40"（每 20 分钟）→ 主循环 INTERVAL
+#   由槽位数推出 = 3600/3 = 1200s；闹钟相对秒数由 secs_to_next_slot() 算。
+#   真实分钟时间戳 ss_HH_MM.png、强制 eips、电量上报在 ss_update_once.sh / render 侧。
 export PATH=/usr/sbin:/usr/bin:/bin:/sbin:$PATH
 
 # 脚本版本号：每次实质改动都 +1，供 deploy_v5.sh 自证遥测 grep 确认设备上跑的是哪一版。
-SVER="20261109.1"
+SVER="20261109.2"
 
 CONF=/mnt/us/dash/ss_config.sh
 [ -f "$CONF" ] && . "$CONF"
@@ -174,60 +181,109 @@ set_rtc_wakeup() {
     log "rtcWakeup=${SECS}s（下次槽位，连设4次）"
 }
 
+# ---- 阶段2：严格照抄 fanzhh 双进程架构（2026-11-09 00:4x 补齐缺失的一半）----
+# fanzhh/kindle-calendar-weather dash-daemon.sh L175-212 是「Kindle 7 实机验证每小时
+# 真深睡唤醒」的**完整**写法，由两条互不依赖的进程组成：
+#   * watch_events &  （L175-183 / L196-198）后台：-m 常驻监听 + 管道 while read
+#     + 外层 while true 断线重连；只负责「readyToSuspend 设闹钟/关 WiFi」
+#     与「wakeupFromSuspend 醒来更新」。
+#   * 前台主循环（L200-212）：每 POLL=60s 用挂钟 date +%s 判断
+#     now-last >= INTERVAL 就**独立触发一次更新**。
+#     ★ 这一条才是「到点必更新、永不睡死」的真正保障：完全不依赖 RTC 闹钟、
+#       不依赖任何 powerd 事件。设备没真深睡（Active/GUI/屏保但被 KUAL 拉起）时
+#       照常按挂钟更新；设备真深睡时 sleep 被冻结，改由 RTC 唤醒 + 事件回调更新，
+#       醒来后 SS_LAST 已刷新，主循环不会重复。两者互补覆盖所有电源状态。
+# 【2026-11-09 00:40 实证】11/7 基线(894d0a6) 与 11/8 全部版本都只有
+#   「单进程无限阻塞等事件」这一半：用户点完 KUAL 5 后设备停在 Active/GUI 态，
+#   没有 readyToSuspend 事件、启动兜底闹钟在非 readyToSuspend 态又被 powerd 拒绝，
+#   进程便永远卡在 lipc-wait-event 里 → 00:40 槽位设备零活动（ntfy 铁证）。
+#   11-08 09:00/10:00「整点全不醒」也是同一根因。本次把缺的这一半补齐。
+try_update() {
+    # 原子锁（mkdir）：主循环与事件回调可能同时到点，避免并发取图 / 重复 eips。
+    # 用目录而非文件，mkdir 在 ash 下是原子的；启动时 rm -rf 清理残留。
+    if mkdir /tmp/ss_updating 2>/dev/null; then
+        do_update
+        rmdir /tmp/ss_updating 2>/dev/null
+    else
+        log "已有更新进行中，跳过本轮"
+    fi
+}
+
+handle_event() {
+    case "$1" in
+        *readyToSuspend*)
+            # 【严格约束】此回调内除 lipc-set-prop + 本地日志外不做任何网络 I/O；
+            # upstream 三家均如此（fanzhh L106-111、Basti189 L289）。
+            set_rtc_wakeup
+            lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null
+            log "readyToSuspend：设闹钟 + 关 WiFi，进入深睡"
+            ;;
+        *wakeupFromSuspend*)
+            # 被 RTC 唤醒：防更新途中被重新挂起 → 取图 → 刷屏 → 再兜底设闹钟。
+            lipc-set-prop -i com.lab126.powerd deferSuspend 180 2>/dev/null
+            log "RTC 唤醒 → 取图刷屏"
+            try_update
+            # 立刻解除 deferSuspend（对齐 zpetterd scheduler.sh L139/L157），
+            # 别把「推迟挂起」撑到下一次闹钟过期。
+            lipc-set-prop -i com.lab126.powerd deferSuspend 0 2>/dev/null
+            set_rtc_wakeup
+            lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null
+            log "唤醒后已兜底设下次闹钟并关 WiFi"
+            ;;
+        *goingToScreenSaver*)
+            set_rtc_wakeup
+            log "进入屏保，已设下次唤醒"
+            ;;
+    esac
+}
+
+watch_events() {
+    while true; do
+        # -m 常驻 + 管道逐行读（fanzhh L177-180）；外层 while true 是断线重连
+        # （fanzhh L176/L181），而不是改用 -s 单发 —— 11/8 那次「诊断对一半、解法错」。
+        lipc-wait-event -m com.lab126.powerd \
+            'goingToScreenSaver,wakeupFromSuspend,readyToSuspend' 2>/dev/null \
+            | while read -r EV; do
+                [ -n "$EV" ] && handle_event "$EV"
+              done
+        log "事件监听断开，5s 后重连"
+        sleep 5
+    done
+}
+
 phase2_loop() {
-    log "===== 阶段2 RTC 真深睡（11/7 实证基线 + upstream 校核, SS_RTC=$SS_RTC）====="
+    log "===== 阶段2（fanzhh 双进程：后台事件 + 前台挂钟轮询, SS_RTC=$SS_RTC）====="
     dbg "BOOT v$SVER phase2 rtc=$SS_RTC"
     # 清除 11/8 方案B 残留的 preventScreenSaver=1（该标志进程被杀后仍持久，
     # 不复位会禁用「按电源键进待机」）。本方案从不设置它，仅做一次性清理。
     lipc-set-prop com.lab126.powerd preventScreenSaver 0 2>/dev/null
-    rm -f /tmp/ss_updating
+    rm -rf /tmp/ss_updating 2>/dev/null
     startup_refresh_if_stale
-    # 【兜底·关键】启动时无论如何先设一次闹钟。若进程是在设备已处于挂起态时被拉起
-    # （KUAL 在线更新 / 重启守护），挂起事件不会再次触发，仅靠事件补设会留空窗。
     set_rtc_wakeup
     log "启动已兜底设下次唤醒闹钟"
+
+    # 后台事件监听（fanzhh L196-198）
+    watch_events &
+    WATCHER=$!
+    trap 'kill "$WATCHER" 2>/dev/null' EXIT INT TERM
+
+    # 前台主循环（fanzhh L200-212）：挂钟判断，与事件完全解耦。
+    # INTERVAL 由槽位数推出：当前 SS_SLOT_MINUTES="0 20 40" 共 3 槽 → 3600/3=1200s。
+    SLOT_COUNT=0
+    for s in $SS_SLOT_MINUTES; do SLOT_COUNT=$(( SLOT_COUNT + 1 )); done
+    [ "$SLOT_COUNT" -lt 1 ] && SLOT_COUNT=1
+    INTERVAL=$(( 3600 / SLOT_COUNT ))
+    log "主循环启动：POLL=60s，INTERVAL=${INTERVAL}s（槽位 ${SS_SLOT_MINUTES}）"
     while true; do
-        # 无限阻塞等下一个 powerd 事件；不用 -s 超时（suspend 期 CLOCK_MONOTONIC 冻结，
-        # 超时永不返回 —— 这正是 11/8 睡死的机制）。每轮重建连接，天然抗断连。
-        EV=$(lipc-wait-event com.lab126.powerd \
-                'goingToScreenSaver,wakeupFromSuspend,readyToSuspend' 2>/dev/null)
-        # 空返回（lipc 异常 / 连接被丢）保护：短暂等待后重建监听，避免忙循环空转耗电
-        if [ -z "$EV" ]; then
-            sleep 5
-            continue
+        NOW=$(date +%s)
+        LAST=$(cat "$SS_LAST" 2>/dev/null)
+        case "$LAST" in ''|*[!0-9]*) LAST=0 ;; esac
+        if [ $(( NOW - LAST )) -ge "$INTERVAL" ]; then
+            log "主循环：距上次更新 $(( NOW - LAST ))s >= ${INTERVAL}s → 触发更新"
+            try_update
         fi
-        case "$EV" in
-            *readyToSuspend*)
-                # 即将休眠：设下次 RTC 唤醒闹钟 + 关 WiFi 进入真深睡省电。
-                # 【严格约束】此回调内除 lipc-set-prop 外不做任何网络 I/O / 日志外发，
-                # upstream 三家均如此（fanzhh L106-111、Basti189 L289）。
-                set_rtc_wakeup
-                lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null
-                log "设唤醒闹钟并关 WiFi，进入深睡"
-                ;;
-            *wakeupFromSuspend*)
-                # 被 RTC 唤醒：防更新途中被重新挂起 → 恢复 WiFi → 取图 → 刷屏。
-                # ss_update_once.sh 内部会按需开 WiFi（wifi_restore），故此处只需 deferSuspend。
-                lipc-set-prop -i com.lab126.powerd deferSuspend 180 2>/dev/null
-                log "RTC 唤醒，开始恢复 WiFi 并取图"
-                do_update
-                dbg "WAKE upd done"
-                # 更新一结束立刻解除 deferSuspend（对齐 zpetterd scheduler.sh L139/L157），
-                # 让设备立即回到可挂起态，别把「推迟挂起」撑到闹钟过期。
-                lipc-set-prop -i com.lab126.powerd deferSuspend 0 2>/dev/null
-                # 【兜底·关键】无论本次取图成功与否，唤醒后主动再设一次闹钟并关 WiFi。
-                # 与 readyToSuspend 的补设互为冗余：「唤醒→顺手设下一次」自成闭环，
-                # 单点漏设不再级联成永久睡死（11/7 基线核心）。
-                set_rtc_wakeup
-                lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null
-                log "唤醒后已兜底设下次闹钟并关 WiFi"
-                ;;
-            *goingToScreenSaver*)
-                # 手动按电源进待机（非 RTC 唤醒）：确保下次休眠带唤醒闹钟
-                set_rtc_wakeup
-                log "进入屏保，已设下次唤醒"
-                ;;
-        esac
+        # 挂钟判断，故 sleep 被 suspend 冻结也不影响正确性；醒来后按 SS_LAST 判定。
+        sleep 60
     done
 }
 
