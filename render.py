@@ -5,7 +5,7 @@ Kindle 8 (800x600) 日历 + 天气仪表盘渲染器
 数据源：Open-Meteo（免密钥）
 输出：8-bit 灰度 PNG，供 Kindle 用 eips -f -g 全屏显示
 """
-import json, urllib.request, urllib.parse, datetime, sys, os, math
+import json, urllib.request, urllib.parse, datetime, sys, os, math, glob
 from PIL import Image, ImageDraw, ImageFont
 from lunardate import LunarDate
 
@@ -1385,6 +1385,12 @@ if __name__ == "__main__":
     if args.hours > 0:
         base = datetime.datetime.now(TZLOCAL).replace(minute=0, second=0, microsecond=0)
         os.makedirs(args.outdir, exist_ok=True)
+        # 清掉上一次批量留下的旧槽位图（SS_SLOT_MINUTES 改变后避免陈旧图被误用）
+        for f in glob.glob(os.path.join(args.outdir, "ss_*.png")):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
         names = []
         for k in range(args.hours):
             at = base + datetime.timedelta(hours=k)
@@ -1395,6 +1401,25 @@ if __name__ == "__main__":
                 lf = os.path.join(args.outdir, at.strftime("%Y%m%d_%H") + "_land.png")
                 render_landscape(data, lf, at)
                 names.append(os.path.basename(lf))
+
+        # 待机画面「分钟槽位」图：每个 (小时, 槽位分钟) 一张，脚注显示真实分钟
+        # （如 20:40），而非整点 :00。这样屏保「更新时间」能反映设备真实唤醒时刻。
+        # 必须与设备端 ss_config.sh 的 SS_SLOT_MINUTES 保持一致（CI 通过 env 传入）。
+        slot_env = os.environ.get("SS_SLOT_MINUTES", "0 20 40")
+        try:
+            SLOT_MINS = [int(x) for x in slot_env.replace(",", " ").split() if x.strip()]
+        except ValueError:
+            SLOT_MINS = []
+        if not SLOT_MINS:
+            SLOT_MINS = [0]
+        WIN_END = base + datetime.timedelta(hours=args.hours)
+        for h in range(24):
+            for m in SLOT_MINS:
+                sat = base.replace(hour=h, minute=m, second=0, microsecond=0)
+                if sat < base or sat >= WIN_END:
+                    continue
+                sfn = os.path.join(args.outdir, "ss_%02d_%02d.png" % (h, m))
+                render(data, sfn, sat)
 
         # 待机画面「当前应显示的槽位」：取最近一次已发生的更新点。
         # 每小时一更下，最近一次 = 当前小时（如 20:58 补刷应显示 20:00 画面，

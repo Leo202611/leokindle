@@ -50,6 +50,8 @@ jobs:
         run: python3 batt_relay.py >> "$GITHUB_ENV"
 
       - name: 批量渲染逐小时图（竖屏 + 横屏两套）
+        env:
+          SS_SLOT_MINUTES: "0 20 40"
         run: |
           mkdir -p out
           ARGS="--hours 26 --outdir out --landscape"

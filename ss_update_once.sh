@@ -10,14 +10,15 @@
 #   * 只刷一次 eips（e-ink 双稳态，之后保持零耗电）；
 #   * 电量上报复用本次已打开的 WiFi，零额外唤醒、单次请求不重试、失败不阻断显示。
 #
-# 图源命名：ss_06.png / ss_09.png / ss_12.png / ss_15.png / ss_18.png
-# 是 CI 固定槽位图，不会像逐小时图那样被 orphan 分支滚动清理掉；
-# 非更新点用 ss_latest.png。
+# 图源命名：ss_HH_MM.png 是 CI 按「小时_槽位分钟」预渲染的固定槽位图（脚注显示真实分钟，
+# 如 ss_20_40.png 的「更新时间」为 20:40），不会像逐小时图那样被 orphan 分支滚动清理掉；
+# 同小时整点兜底图 ss_HH.png（脚注 :00）；非更新点用 ss_latest.png。
 export PATH=/usr/sbin:/usr/bin:/bin:/sbin:$PATH
 
 CONF=/mnt/us/dash/ss_config.sh
 [ -f "$CONF" ] && . "$CONF"
 [ -n "${SS_HOURS:-}" ]       || SS_HOURS="6 9 12 15 18"
+[ -n "${SS_SLOT_MINUTES:-}" ] || SS_SLOT_MINUTES="0 20 40"
 [ -n "${SS_LOCAL_SRV:-}" ]   || SS_LOCAL_SRV=""
 [ -n "${SS_GH_API:-}" ]      || SS_GH_API="https://api.github.com/repos/Leo202611/leokindle/contents"
 [ -n "${SS_GH_BRANCH:-}" ]   || SS_GH_BRANCH="dash"
@@ -165,10 +166,18 @@ log "===== 单次更新待机画面 ====="
 # 「最近一次已发生的更新槽位」画面，不是当前小时的实时图：
 # 20:58 补刷应显示 18:00 那张，而不是 20:00，否则 5 个时辰的设定就失去意义。
 HM=$(date +%H); HH=$(( ${HM#0} ))
+M=$(date +%M); M=$(( ${M#0} ))
+# 当前槽位分钟：SS_SLOT_MINUTES 中 ≤ 当前分钟的最大值；若当前分钟早于首个槽位
+# （理论上不会发生，因 SS_SLOT_MINUTES 含 0），取首个槽位。
+SM=""
+for s in $SS_SLOT_MINUTES; do
+    [ "$s" -le "$M" ] && SM=$s
+done
+[ -z "$SM" ] && SM=${SS_SLOT_MINUTES%% *}
 FN=""
-case " $SS_HOURS " in *" $HH "*) FN=$(printf 'ss_%02d.png' "$HH") ;; esac
+case " $SS_HOURS " in *" $HH "*) FN=$(printf 'ss_%02d_%02d.png' "$HH" "$SM") ;; esac
 [ -n "$FN" ] || FN="ss_latest.png"
-log "本地 $HH 时，目标图: ${FN}（更新点: ${SS_HOURS}）"
+log "本地 $HH:$M 时，槽位分钟 $SM，目标图: ${FN}（更新点: ${SS_HOURS}）"
 
 # ---- 2. 按需开 / 恢复 WiFi ----
 # 阶段2 深睡唤醒后 WiFi 处于断连态，必须主动重连（5.16.x suspended 态无法自动重连，
@@ -205,6 +214,13 @@ if [ "$ST" = "CONNECTED" ]; then
     if [ "$GOT" != "1" ] && [ -n "$SS_LOCAL_SRV" ]; then
         if fetch_one "http://$SS_LOCAL_SRV/$FN" 4 plain; then
             GOT=1; log "OK 电脑 HTTP $FN"
+        fi
+    fi
+    # 槽位分钟图若缺失（设备 SS_SLOT_MINUTES 与 CI 不一致），先回退同小时整点图 ss_HH.png
+    if [ "$GOT" != "1" ] && [ "$FN" != "ss_latest.png" ]; then
+        HHFN=$(printf 'ss_%02d.png' "$HH")
+        if fetch_one "$SS_CDN/$HHFN?cb=$CB" "$SS_CURL_T" plain; then
+            GOT=1; log "OK 回退 $HHFN（槽位分钟图缺失）"
         fi
     fi
     # API 匿名限额 60 次/小时，万一被同网其它设备打满，走不限额的最新图通道

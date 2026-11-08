@@ -23,6 +23,8 @@ SS_HOURS="0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23"
 #   - 想每小时整点一次：改成 "0"
 #   - 想每天 5 次省电：SS_SLOT_MINUTES="0" 且 SS_HOURS="6 9 12 15 18"
 #   - 任何 0–59 的整数组合都行，如 "0 15 30 45"（每 15 分钟）
+#   - 必须与 CI（.github/workflows/dash.yml 的 SS_SLOT_MINUTES env）保持一致，
+#     否则设备取的 ss_HH_MM.png 在 dash 分支不存在、会回退到 ss_HH.png（整点 :00）。
 SS_SLOT_MINUTES="0 20 40"
 
 # 每隔 N 分钟更新一次（>0 启用高频测试模式）；生产期设为 0，
