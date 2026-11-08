@@ -1,321 +1,234 @@
 #!/bin/sh
-# 待机画面定时调度器
+# ---------------------------------------------------------------------------
+# 待机画面调度器 —— 逐行移植 fanzhh/kindle-calendar-weather 的 dash-daemon.sh
+# （main 分支 L1-212，Kindle 7 / 5.11.1.1 实机验证「每小时真深睡唤醒」的那份）
 #
-# 两种模式由 ss_config.sh 的 SS_RTC 选择：
-#   SS_RTC=0（阶段1）：用户态常驻 + deferSuspend 轻休眠，不深睡，续航约 1–2 天。
-#   SS_RTC=1（阶段2）：真深睡 + RTC 闹钟定时唤醒，目标不接电源撑一周。
+# 【2026-11-09 02:0x 减法重写】此前本项目在这份实现外层层加自创机制，
+#   11/8–11/9 连续失败（sysfs wakealarm、-s 单发循环、漏抄前台主循环、
+#   mkdir 互斥锁、60s 时间戳去重、deferSuspend、启动兜底设闹钟），
+#   全部删除，回到 upstream 原版。以后改本文件先回答：
+#   「这一行在 fanzhh 源码第几行？」答不出就不要加。
 #
-# 【2026-11-09 全面回退】阶段2 恢复为 11/7 实证基线(commit 894d0a6)架构，
-# 并逐条用三份 upstream「main 分支真实源码」校核（原文已下载到 /tmp/upstream/）：
-#   fanzhh/kindle-calendar-weather     kindle/dash-daemon.sh（Kindle 7 实机，每小时真深睡唤醒）
-#   Basti189/onlinescreensaverPW2      bin/scheduler.sh + utils.sh（PW2 事件驱动 + linkss）
-#   zpetterd/kndl-online-screensaver  kindle/bin/scheduler.sh + utils.sh（PW2 主循环式）
-# 该基线在 11/8 00:00–08:00 连续 8 次每整点自动更新成功（电量上报可证，8.6%/天）。
-# 11/8 上午起把它逐条改坏，全天 12 次提交、0 次成功，故全部撤销：
-#   ① 「无限阻塞等单个 powerd 事件」→「lipc-wait-event -s REMAINING 超时循环」：
-#      suspend 期间 CLOCK_MONOTONIC 冻结，超时永不返回（23:37 WAIT rem=161 后永久静默）。
-#   ② 丢掉「readyToSuspend 关 WiFi」：三家 upstream 都主动 wirelessEnable 0。
-#   ③ 改用 /sys/class/rtc/rtc0/wakealarm 绝对闹钟「设」唤醒：
-#      fanzhh dash-daemon.sh L9-11 明确证伪（powerd 休眠末段会用 rtcWakeup 覆盖它，不会唤醒）；
-#      zpetterd 的 sysfs 只用于进程退出时 echo 0 清理，从不用来设闹钟 —— 11/8 误读了这点。
-#   ④ 在 readyToSuspend 回调里塞 ntfy POST（dbg() 含 curl -m 5）：upstream 回调零网络 I/O。
-# 【2026-11-09 00:4x 再修正】上面 11/7 基线只抄了 fanzhh 的「一半」：
-#   它只有「单进程无限阻塞等事件」，缺了 fanzhh L196-212 的
-#   「后台 watch_events & + 前台主循环每 60s 用挂钟 date +%s 独立判到点更新」。
-#   缺这一半 → 设备停在 Active/GUI（如刚点完 KUAL 5）时收不到 readyToSuspend、
-#   启动兜底闹钟在该态又被 powerd 拒绝，进程便永久卡死：11-08 09/10 点睡死、
-#   11-09 00:40 零活动（ntfy 铁证）均此因。本次补齐双进程，仍逐条照抄源码。
-# 现架构（= fanzhh dash-daemon.sh 完整写法）：
-#   * 【前台主循环·核心保障】每 POLL=60s 用挂钟 now-last >= INTERVAL 独立触发更新，
-#     完全不依赖 RTC 闹钟 / powerd 事件；sleep 被 suspend 冻结也不影响（醒来按挂钟判定）。
-#   * 【后台 watch_events】-m 常驻 + 管道 while read + 外层 while true 断线重连；
-#     readyToSuspend 设闹钟+关 WiFi、wakeupFromSuspend 更新+兜底设闹钟、goingToScreenSaver 设闹钟。
-#   * 两路用 SS_LAST 时间戳去重（60s 内的重复触发跳过）；**不用互斥锁**。
-#     【2026-11-09 01:2x】曾在 20261109.2 加过 mkdir /tmp/ss_updating 原子锁，
-#     结果 01:09 一次 do_update 未完成就永久残留，01:20 主循环被挡死 → 已移除。
-#     fanzhh 原版从不用锁，靠脚本幂等 + 时间戳去重，单次卡住不拖死后续。
-#   * 设闹钟只用 lipc rtcWakeup 相对秒（连设 4 次、不防抖）；绝不写 sysfs wakealarm、
-#     不调 preventScreenSaver、不自己 echo mem、事件回调零网络 I/O。
-#   * 计时一律挂钟 date +%s，绝不用 sleep 累计（BusyBox sleep 休眠时被冻结）。
-# 【保留的 11/8 新需求】SS_SLOT_MINUTES="0 20 40"（每 20 分钟）→ 主循环 INTERVAL
-#   由槽位数推出 = 3600/3 = 1200s；闹钟相对秒数由 secs_to_next_slot() 算。
-#   真实分钟时间戳 ss_HH_MM.png、强制 eips、电量上报在 ss_update_once.sh / render 侧。
-export PATH=/usr/sbin:/usr/bin:/bin:/sbin:$PATH
+# 只做 5 处不可避免的映射，其余逐行对应原文：
+#   M1 原 L127/141/154/207 /mnt/us/documents/ss-install.sh
+#      → 本项目 $RUN_DIR/ss_update_once.sh（拉图+刷屏+写 linkss 的脚本）
+#   M2 原 L30 IMG=/mnt/us/screensaver-backup/.current.png
+#      → /mnt/us/linkss/screensavers/bg_ss00.png（本项目屏保落盘路径）
+#   M3 原 L29 STAMP=/mnt/us/.dash_last_check / L31 LOG=/mnt/us/dash.log
+#      → /mnt/us/dash/ 目录下（本项目文件布局）
+#   M4 原 L61-64 net_probe 探测自建服务器 http://$HOSTPORT/health
+#      → lipc-get-prop com.lab126.wifid cmState = CONNECTED
+#        （本项目无常开服务器；用设备原生属性判断 WiFi 就绪，语义等价、零网络 I/O）
+#   M5 原 L18-19 DASH_INTERVAL=1800 / DASH_WAKE_INTERVAL=3600
+#      → 1200 / 1200（用户 11/9 定案「每 20 分钟」）。仍可由 $CONF 覆盖。
+#
+# 【保留原版的关键结论，勿改】
+#   * 原 L9-11：直接写 /sys/class/rtc/rtc0/wakealarm 不会唤醒，
+#     powerd 休眠末段会用 rtcWakeup 覆盖它。设闹钟只用 lipc rtcWakeup <相对秒>。
+#   * 原 L14：readyToSuspend 连发 7 次，回调必须极轻，不做防抖、每轮必设。
+#   * 原 L175-183：-m 常驻 + 管道 while read + 外层 while true 断线重连。
+#   * 原 L196-212：后台 watch_events & ＋ 前台主循环每 60s 用挂钟 date +%s
+#     独立判到点更新。**前台挂钟轮询是「到点必更新」的保障，不得删除**。
+#   * 原 L200-209：last 是内存变量，触发后立刻推进；STAMP 只用于重启后初始化。
+#   * 全程无任何互斥锁、无 deferSuspend、无事件回调里的网络上报。
+# ---------------------------------------------------------------------------
+set -u
 
-# 【2026-11-09 01:2x 第三处修正】`20261109.2` 里我又自作主张加了 `mkdir` 互斥锁，
-# 而 fanzhh 原版从不用锁。01:09 一次 do_update 未完成 → 锁残留 → 01:20 主循环被挡死
-# （本地日志「已有更新进行中，跳过本轮」不上报 ntfy，故远程看到零活动）。
-# 已移除锁、改用 SS_LAST 时间戳去重；主循环 last 改回 fanzhh 的内存变量并触发即推进。
-# 脚本版本号：每次实质改动都 +1，供 deploy_v5.sh 自证遥测 grep 确认设备上跑的是哪一版。
-SVER="20261109.3"
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH
+export PATH
 
-CONF=/mnt/us/dash/ss_config.sh
-[ -f "$CONF" ] && . "$CONF"
-[ -n "${SS_HOURS:-}" ]         || SS_HOURS="6 9 12 15 18"
-[ -n "${SS_SLOT_MINUTES:-}" ]  || SS_SLOT_MINUTES="0"
-[ -n "${SS_TEST_INTERVAL:-}" ] || SS_TEST_INTERVAL=0
-[ -n "${SS_LOG:-}" ]           || SS_LOG="/mnt/us/dash/ss.log"
-[ -n "${SS_LAST:-}" ]          || SS_LAST="/mnt/us/dash/ss_last"
-[ -n "${SS_DONE:-}" ]          || SS_DONE="/mnt/us/dash/ss_done"
-[ -n "${SS_RTC:-}" ]           || SS_RTC=0
+# 版本号：仅用于 deploy_v5.sh 自证遥测确认设备上跑的是哪一版（分发链路，非调度机制）
+SVER="20261109.5"
 
-RUN_DIR=/tmp/dashss
+CONF=/mnt/us/dash/ss_dash.conf          # M3/M5：可选，改频率不必改脚本
+POLL=60
+STAMP=/mnt/us/dash/ss_last_check        # M3
+IMG=/mnt/us/linkss/screensavers/bg_ss00.png   # M2
+LOG=/mnt/us/dash/ss.log                 # M3
+POWERD=com.lab126.powerd
+EVENTS="goingToScreenSaver,wakeupFromSuspend,readyToSuspend"
+RUN_DIR=/tmp/dashss                     # M1：ss_enable.sh 把脚本复制进 tmpfs
 [ -f "$RUN_DIR/ss_update_once.sh" ] || RUN_DIR=/mnt/us/dash
 
-log() { echo "[$(date +'%m-%d %H:%M:%S')] [sched] $*" >> "$SS_LOG" 2>/dev/null; }
+log() { echo "$(date '+%F %T') $*" >> "$LOG" 2> /dev/null; }
 
-# 【2026-11-09】遥测改为纯本地日志，零网络 I/O。
-# 原实现在此做 3 次 lipc-get-prop + curl -m 5 POST ntfy；放进 readyToSuspend 回调会阻塞
-# 最多 5 秒，而 powerd 在该窗口故意连发多次 readyToSuspend（Basti189 L259-263 原文）。
-# upstream 三家的事件回调里都只有 lipc-set-prop、零网络。版本自证由 deploy_v5.sh 的
-# dep_report（独立 ntfy 通道）负责，不依赖本函数。
-dbg() { echo "[$(date +'%m-%d %H:%M:%S')] [dbg] $*" >> "$SS_LOG" 2>/dev/null; }
-
-do_update() {
-    log "---- 开始更新 ----"
-    T0=$(date +%s)
-    # SS_FORCE_EIPS=1：保留 11/8 ca20876 真机验证过的修复。唤醒瞬间 status 常为 Active，
-    # 旧逻辑会跳过 eips，导致「取图成功但屏保不刷新」。自动更新一律强制写帧缓冲；
-    # 手动 KUAL「2 立即更新」直接调 ss_update_once.sh、不经此处，保持旧行为不打扰用户。
-    SS_FORCE_EIPS=1 /bin/sh "$RUN_DIR/ss_update_once.sh" >> "$SS_LOG" 2>&1
-    log "---- 更新结束 用时 $(( $(date +%s) - T0 ))s ----"
-}
-
-# 基于 SS_HOURS（阶段1 用，小时）算距下次更新的秒数。
-next_slot_secs() {
-    M=$(date +'%M'); M=$(( ${M#0} ))
-    FIRST=""; NEXT=""
-    for s in $SS_SLOT_MINUTES; do
-        [ -z "$FIRST" ] && FIRST=$s
-        if [ "$s" -gt "$M" ]; then
-            if [ -z "$NEXT" ] || [ "$s" -lt "$NEXT" ]; then NEXT=$s; fi
-        fi
-    done
-    [ -n "$NEXT" ] || NEXT=$(( 60 + ${FIRST} ))
-    echo $(( (NEXT - M) * 60 ))
-}
-
-# 基于 SS_SLOT_MINUTES（每小时内的分钟槽位，如 "0 20 40"）算距下次唤醒的秒数。
-# SS_SLOT_MINUTES 是「小时内的分钟」，不再乘 60；NEXT 也以分钟计，乘以 60 得秒。
-secs_to_next_slot() {
-    M=$(date +'%M'); M=$(( ${M#0} ))
-    FIRST=""; NEXT=""
-    for s in $SS_SLOT_MINUTES; do
-        [ -z "$FIRST" ] && FIRST=$s
-        if [ "$s" -gt "$M" ]; then
-            if [ -z "$NEXT" ] || [ "$s" -lt "$NEXT" ]; then NEXT=$s; fi
-        fi
-    done
-    [ -n "$NEXT" ] || NEXT=$(( 60 + ${FIRST} ))
-    S=$(( (NEXT - M) * 60 - $(date +%S) ))
-    [ "$S" -lt 10 ] && S=$(( S + 60 ))
-    echo "$S"
-}
-
-slot_id() {
-    HM=$(date +%H); HH=$(( ${HM#0} ))
-    case " $SS_HOURS " in
-        *" $HH "*) date +%Y%m%d_%H; return 0 ;;
-    esac
-    return 1
-}
-
-test_mode() { [ "${SS_TEST_INTERVAL:-0}" -gt 0 ]; }
-
-startup_refresh_if_stale() {
-    # 启动补一次：修正可能滞留的旧静态图；20 分钟内刚更新过就跳过
-    LAST=$(cat "$SS_LAST" 2>/dev/null)
-    NOW=$(date +%s)
-    if [ -z "$LAST" ] || [ $(( NOW - ${LAST:-0} )) -gt 1200 ]; then
-        log "启动补刷一次"
-        # do_update 统一注入 SS_FORCE_EIPS=1：开机时 GUI 活跃(status=Active) 会被
-        # ss_update_once.sh 跳过 eips，必须强制写帧缓冲，否则挂起后双稳态保留旧画面。
-        do_update
+# ---- 原 L37-54 ----
+load_conf() {
+    INTERVAL=1200      # M5：原 1800（30 分钟）→ 20 分钟
+    WAKE=1200          # M5：原 3600（1 小时）→ 20 分钟
+    WIFI_MODE=auto
+    if [ -r "$CONF" ]; then
+        eval "$(tr -d '\r' < "$CONF")"
+        INTERVAL="${DASH_INTERVAL:-1200}"
+        WAKE="${DASH_WAKE_INTERVAL:-1200}"
+        WIFI_MODE="${DASH_WIFI:-auto}"
     fi
+    case "$INTERVAL" in '' | *[!0-9]*) INTERVAL=1200 ;; esac
+    case "$WAKE" in '' | *[!0-9]*) WAKE=0 ;; esac
+    [ "$INTERVAL" -lt 300 ] && INTERVAL=300
+    [ "$WAKE" -gt 0 ] && [ "$WAKE" -lt 120 ] && WAKE=120
 }
 
-# ---- 阶段1：用户态常驻 + deferSuspend 轻休眠（不深睡，续航约 1–2 天）----
-phase1_loop() {
-    log "===== 阶段1 轻休眠模式（deferSuspend，SS_RTC=$SS_RTC）====="
-    dbg "BOOT v$SVER phase1 rtc=$SS_RTC"
-    startup_refresh_if_stale
-    while true; do
-        if test_mode; then
-            do_update
-            SECS=$(( SS_TEST_INTERVAL * 60 ))
-        else
-            if SID=$(slot_id); then
-                DONE=$(cat "$SS_DONE" 2>/dev/null)
-                if [ "$DONE" != "$SID" ]; then
-                    log "到达更新点 $SID"
-                    do_update
-                else
-                    log "更新点 $SID 本轮已完成"
+load_conf
+
+# ---------------------------------------------------------------------------
+# 网络诊断 —— 原 L58-83
+# ---------------------------------------------------------------------------
+# M4：原版 curl /health 探自建服务器；本项目无常开服务器，改用设备原生属性。
+net_probe() {
+    command -v lipc-get-prop > /dev/null 2>&1 || return 1
+    [ "$(lipc-get-prop com.lab126.wifid cmState 2> /dev/null)" = "CONNECTED" ]
+}
+
+wifi_switch() {
+    lipc-get-prop com.lab126.cmd wirelessEnable 2> /dev/null | tr -d '\r\n'
+}
+
+wifi_ip() {
+    out=$(ifconfig wlan0 2> /dev/null | grep -i "inet" | head -1)
+    [ -z "$out" ] && out=$(ip -4 addr show wlan0 2> /dev/null | grep -i "inet " | head -1)
+    echo "$out" | sed 's/^ *//' | cut -c1-60
+}
+
+# 一行日志说明当前网络状态：开关 / IP / 默认路由
+net_dump() {
+    wl=$(wifi_switch)
+    ipa=$(wifi_ip)
+    rt=$(awk 'NR>1 && $2=="00000000" {print "有"} NR>1 && $2!="00000000" {n=1} END {if (n && !found) print ""}' /proc/net/route 2> /dev/null | head -1)
+    [ -z "$rt" ] && rt="无"
+    log "$1：无线=${wl:-?} IP=${ipa:-无} 默认路由=${rt}"
+}
+
+# ---- 原 L127/141/154/207 的等价物：本项目唯一的「拉图+刷屏」入口 ----
+do_update() {
+    /bin/sh "$RUN_DIR/ss_update_once.sh" > /dev/null 2>&1
+}
+
+# ---------------------------------------------------------------------------
+# 事件处理 —— 原 L85-173
+# ---------------------------------------------------------------------------
+handle_event() {
+    line="$1"
+    load_conf          # 允许改完 conf 后不重启进程也生效
+
+    case "$line" in
+        readyToSuspend*)
+            if [ "$WAKE" -gt 0 ]; then
+                i=0
+                while [ "$i" -lt 4 ]; do
+                    if lipc-set-prop -i "$POWERD" rtcWakeup "$WAKE" > /dev/null 2>&1; then
+                        log "readyToSuspend：已设置 rtcWakeup=${WAKE}s"
+                        break
+                    fi
+                    i=$((i + 1))
+                    sleep 1
+                done
+                [ "$i" -ge 4 ] && log "readyToSuspend：设置 rtcWakeup 失败"
+            fi
+            if [ "$WIFI_MODE" = "auto" ]; then
+                net_dump "休眠前"
+                lipc-set-prop com.lab126.cmd wirelessEnable 0 > /dev/null 2>&1
+                sleep 2
+                net_dump "关无线后"
+            fi
+            ;;
+
+        wakeupFromSuspend*)
+            log "wakeupFromSuspend：开始更新"
+            net_dump "唤醒瞬间"
+
+            ok=0
+
+            # ---- 策略 1：直接开无线 ----
+            lipc-set-prop com.lab126.cmd wirelessEnable 1 > /dev/null 2>&1
+            sleep 15
+            net_dump "策略1后"
+            probe=$(net_probe && echo OK || echo FAIL)
+            log "策略1：探测=$probe"
+            if [ "$probe" = "OK" ]; then
+                do_update && { ok=1; log "策略1成功"; }
+            fi
+
+            # ---- 策略 2：关掉再打开 ----
+            if [ "$ok" = "0" ]; then
+                log "策略2：切换无线 0→1"
+                lipc-set-prop com.lab126.cmd wirelessEnable 0 > /dev/null 2>&1
+                sleep 5
+                lipc-set-prop com.lab126.cmd wirelessEnable 1 > /dev/null 2>&1
+                sleep 25
+                net_dump "策略2后"
+                probe=$(net_probe && echo OK || echo FAIL)
+                log "策略2：探测=$probe"
+                if [ "$probe" = "OK" ]; then
+                    do_update && { ok=1; log "策略2成功"; }
                 fi
             fi
-            SECS=$(next_slot_secs)
-        fi
-        log "心跳：进入等待，距下次约 ${SECS}s（deferSuspend 防冻结）"
-        REM=$SECS
-        while [ "$REM" -gt 0 ]; do
-            CHUNK=60
-            [ "$REM" -lt "$CHUNK" ] && CHUNK=$REM
-            # 推迟 powerd 休眠，避免本进程被 suspend 冻住；e-ink 仍息屏保持，CPU 轻闲
-            lipc-set-prop -i com.lab126.powerd deferSuspend $(( CHUNK + 30 )) 2>/dev/null
-            sleep "$CHUNK"
-            REM=$(( REM - CHUNK ))
-            echo "[$(date +'%m-%d %H:%M:%S')] [sched] alive rem=${REM}s" >> "$SS_LOG" 2>/dev/null
-        done
-        sleep 1
-    done
-}
 
-# ---- 阶段2：RTC 真深睡（11/7 实证基线 + upstream 校核）----
-set_rtc_wakeup() {
-    # 严格沿用 11/7 实证基线 + 三份 upstream 源码：
-    #   * 只用 lipc-set-prop -i com.lab126.powerd rtcWakeup <相对秒>
-    #   * 绝不写 /sys/class/rtc/*/wakealarm（见文件头 ③，fanzhh L9-11 已证伪）
-    #   * 每轮 readyToSuspend 必设、不做防抖（Basti189 L259-263：加了防抖会 "completely
-    #     broke wakeups"，因为 powerd 故意重复发 readyToSuspend）
-    #   * 连设 4 次（fanzhh L93-104 的重试），确保真正挂起前那次带上闹钟
-    #   * 相对秒数由 secs_to_next_slot() 用挂钟算（BusyBox sleep 休眠时冻结，绝不用来计时）
-    SECS=$(secs_to_next_slot)
-    I=0
-    while [ "$I" -lt 4 ]; do
-        lipc-set-prop -i com.lab126.powerd rtcWakeup "$SECS" 2>/dev/null
-        I=$(( I + 1 ))
-    done
-    log "rtcWakeup=${SECS}s（下次槽位，连设4次）"
-}
+            # ---- 策略 3：继续等，最多 150 秒 ----
+            if [ "$ok" = "0" ]; then
+                i=0
+                while [ "$i" -lt 10 ]; do
+                    i=$((i + 1))
+                    sleep 15
+                    probe=$(net_probe && echo OK || echo FAIL)
+                    log "策略3：第 $i 次探测=$probe"
+                    if [ "$probe" = "OK" ]; then
+                        do_update && { ok=1; log "策略3成功（第 $i 次）"; }
+                        break
+                    fi
+                done
+                [ "$ok" = "0" ] && net_dump "策略3结束"
+            fi
 
-# ---- 阶段2：严格照抄 fanzhh 双进程架构（2026-11-09 00:4x 补齐缺失的一半）----
-# fanzhh/kindle-calendar-weather dash-daemon.sh L175-212 是「Kindle 7 实机验证每小时
-# 真深睡唤醒」的**完整**写法，由两条互不依赖的进程组成：
-#   * watch_events &  （L175-183 / L196-198）后台：-m 常驻监听 + 管道 while read
-#     + 外层 while true 断线重连；只负责「readyToSuspend 设闹钟/关 WiFi」
-#     与「wakeupFromSuspend 醒来更新」。
-#   * 前台主循环（L200-212）：每 POLL=60s 用挂钟 date +%s 判断
-#     now-last >= INTERVAL 就**独立触发一次更新**。
-#     ★ 这一条才是「到点必更新、永不睡死」的真正保障：完全不依赖 RTC 闹钟、
-#       不依赖任何 powerd 事件。设备没真深睡（Active/GUI/屏保但被 KUAL 拉起）时
-#       照常按挂钟更新；设备真深睡时 sleep 被冻结，改由 RTC 唤醒 + 事件回调更新，
-#       醒来后 SS_LAST 已刷新，主循环不会重复。两者互补覆盖所有电源状态。
-# 【2026-11-09 00:40 实证】11/7 基线(894d0a6) 与 11/8 全部版本都只有
-#   「单进程无限阻塞等事件」这一半：用户点完 KUAL 5 后设备停在 Active/GUI 态，
-#   没有 readyToSuspend 事件、启动兜底闹钟在非 readyToSuspend 态又被 powerd 拒绝，
-#   进程便永远卡在 lipc-wait-event 里 → 00:40 槽位设备零活动（ntfy 铁证）。
-#   11-08 09:00/10:00「整点全不醒」也是同一根因。本次把缺的这一半补齐。
-try_update() {
-    # 【2026-11-09 01:2x 修正】移除 `mkdir /tmp/ss_updating` 原子锁。
-    # 这是我自己加的、fanzhh 原版完全没有的东西，且造成了实锤故障：
-    #   01:09:45 一次 do_update 卡在取图阶段（只有 wifi=CONNECTED，无 eips OK、
-    #   无电量上报、SS_LAST 未打点）→ rmdir 永不执行 → 锁残留 →
-    #   01:20 主循环触发时 mkdir 失败，只写本地日志「已有更新进行中，跳过本轮」
-    #   → 画面整点不刷新，且此后永久卡死（本地日志不上报 ntfy，故远程零活动）。
-    # fanzhh dash-daemon.sh L206-209 主循环与 L127 事件回调都直接调更新脚本，无锁；
-    # 靠脚本幂等 + 主循环「内存变量 last」推进计时，单次卡住不会拖死后续。
-    # 此处改用 **SS_LAST 时间戳** 做轻量去重（时间戳不是锁，永不残留）：
-    # ⚠️ ash 函数变量是全局的，必须用独立前缀，否则会覆盖主循环的内存变量 LAST，
-    #    导致主循环刚推进的计时被文件里的旧值冲掉、下一轮又重复触发。
-    _TU_NOW=$(date +%s)
-    _TU_LAST=$(cat "$SS_LAST" 2>/dev/null)
-    case "$_TU_LAST" in ''|*[!0-9]*) _TU_LAST=0 ;; esac
-    if [ $(( _TU_NOW - _TU_LAST )) -lt 60 ]; then
-        log "距上次更新 $(( _TU_NOW - _TU_LAST ))s < 60s，跳过重复触发（防并发取图/eips）"
-        return 0
-    fi
-    do_update
-}
+            [ "$ok" = "0" ] && log "三种策略都没连上网络"
 
-handle_event() {
-    case "$1" in
-        *readyToSuspend*)
-            # 【严格约束】此回调内除 lipc-set-prop + 本地日志外不做任何网络 I/O；
-            # upstream 三家均如此（fanzhh L106-111、Basti189 L289）。
-            set_rtc_wakeup
-            lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null
-            log "readyToSuspend：设闹钟 + 关 WiFi，进入深睡"
+            last=$(date +%s 2> /dev/null || echo 0)
+            [ "$last" -gt 0 ] && date +%s > "$STAMP" 2> /dev/null
+            [ -f "$IMG" ] && eips -g "$IMG" > /dev/null 2>&1
+            log "wakeupFromSuspend：结束（ok=$ok）"
             ;;
-        *wakeupFromSuspend*)
-            # 被 RTC 唤醒：防更新途中被重新挂起 → 取图 → 刷屏 → 再兜底设闹钟。
-            lipc-set-prop -i com.lab126.powerd deferSuspend 180 2>/dev/null
-            log "RTC 唤醒 → 取图刷屏"
-            try_update
-            # 立刻解除 deferSuspend（对齐 zpetterd scheduler.sh L139/L157），
-            # 别把「推迟挂起」撑到下一次闹钟过期。
-            lipc-set-prop -i com.lab126.powerd deferSuspend 0 2>/dev/null
-            set_rtc_wakeup
-            lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null
-            log "唤醒后已兜底设下次闹钟并关 WiFi"
-            ;;
-        *goingToScreenSaver*)
-            set_rtc_wakeup
-            log "进入屏保，已设下次唤醒"
+
+        goingToScreenSaver*)
+            log "goingToScreenSaver"
             ;;
     esac
 }
 
 watch_events() {
     while true; do
-        # -m 常驻 + 管道逐行读（fanzhh L177-180）；外层 while true 是断线重连
-        # （fanzhh L176/L181），而不是改用 -s 单发 —— 11/8 那次「诊断对一半、解法错」。
-        lipc-wait-event -m com.lab126.powerd \
-            'goingToScreenSaver,wakeupFromSuspend,readyToSuspend' 2>/dev/null \
-            | while read -r EV; do
-                [ -n "$EV" ] && handle_event "$EV"
-              done
-        log "事件监听断开，5s 后重连"
+        lipc-wait-event -m "$POWERD" "$EVENTS" 2> /dev/null \
+            | while read -r line; do
+                [ -n "$line" ] && handle_event "$line"
+            done
         sleep 5
     done
 }
 
-phase2_loop() {
-    log "===== 阶段2（fanzhh 双进程：后台事件 + 前台挂钟轮询, SS_RTC=$SS_RTC）====="
-    dbg "BOOT v$SVER phase2 rtc=$SS_RTC"
-    # 清除 11/8 方案B 残留的 preventScreenSaver=1（该标志进程被杀后仍持久，
-    # 不复位会禁用「按电源键进待机」）。本方案从不设置它，仅做一次性清理。
-    lipc-set-prop com.lab126.powerd preventScreenSaver 0 2>/dev/null
-    # 仅清理 20261109.2 遗留的 mkdir 锁目录；本版不使用任何互斥锁，勿误解。
-    rm -rf /tmp/ss_updating 2>/dev/null
-    startup_refresh_if_stale
-    set_rtc_wakeup
-    log "启动已兜底设下次唤醒闹钟"
-
-    # 后台事件监听（fanzhh L196-198）
-    watch_events &
-    WATCHER=$!
-    trap 'kill "$WATCHER" 2>/dev/null' EXIT INT TERM
-
-    # 前台主循环（严格照抄 fanzhh L200-212）：挂钟判断，与事件完全解耦。
-    # ★ last 是【内存变量】，启动时读一次 SS_LAST 后由主循环自己推进，
-    #   不每轮读文件、不依赖 do_update 是否成功打点。
-    #   20261109.2 曾每轮 cat SS_LAST：01:09 那次 do_update 卡住未打点 →
-    #   主循环会每 60s 反复触发同一轮，且永远认为「没更新」。fanzhh 原版不是这样。
-    #   与事件回调可能重复的问题，由 try_update 的 SS_LAST 60s 时间戳去重兜住。
-    # INTERVAL 由槽位数推出：当前 SS_SLOT_MINUTES="0 20 40" 共 3 槽 → 3600/3=1200s。
-    SLOT_COUNT=0
-    for s in $SS_SLOT_MINUTES; do SLOT_COUNT=$(( SLOT_COUNT + 1 )); done
-    [ "$SLOT_COUNT" -lt 1 ] && SLOT_COUNT=1
-    INTERVAL=$(( 3600 / SLOT_COUNT ))
-    LAST=$(cat "$SS_LAST" 2>/dev/null)
-    case "$LAST" in ''|*[!0-9]*) LAST=0 ;; esac
-    log "主循环启动：POLL=60s，INTERVAL=${INTERVAL}s，last=${LAST}（槽位 ${SS_SLOT_MINUTES}）"
-    while true; do
-        NOW=$(date +%s)
-        if [ $(( NOW - LAST )) -ge "$INTERVAL" ]; then
-            log "主循环：距上次更新 $(( NOW - LAST ))s >= ${INTERVAL}s → 触发更新"
-            # 【fanzhh L208 原样】先推进 last 再执行，无论本次更新成败都不重复重试。
-            LAST=$NOW
-            try_update
-        fi
-        # 挂钟判断，故 sleep 被 suspend 冻结也不影响正确性；醒来后按内存 last 判定。
-        sleep 60
-    done
-}
-
-# ---- 入口：按 SS_RTC 分流 ----
-if [ "${SS_RTC:-0}" = "1" ]; then
-    phase2_loop
+# ---------------------------------------------------------------------------
+# 启动 —— 原 L185-212
+# ---------------------------------------------------------------------------
+if command -v lipc-wait-event > /dev/null 2>&1; then
+    WATCH_OK="是"
 else
-    phase1_loop
+    WATCH_OK="否"
 fi
+
+log "守护启动 v$SVER：刷新间隔 ${INTERVAL}s，唤醒间隔 ${WAKE}s，无线策略=${WIFI_MODE}，事件监听=${WATCH_OK}"
+
+watch_events &
+WATCHER=$!
+trap 'kill "$WATCHER" 2> /dev/null' EXIT INT TERM
+
+last=$(cat "$STAMP" 2> /dev/null || echo 0)
+case "$last" in '' | *[!0-9]*) last=0 ;; esac
+
+while true; do
+    load_conf
+    now=$(date +%s 2> /dev/null || echo 0)
+    if [ "$now" -gt 0 ] && [ $((now - last)) -ge "$INTERVAL" ]; then
+        do_update
+        last=$(date +%s 2> /dev/null || echo "$now")
+        date +%s > "$STAMP" 2> /dev/null
+    fi
+    sleep "$POLL"
+done
