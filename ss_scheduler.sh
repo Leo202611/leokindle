@@ -4,19 +4,23 @@
 # 两种模式由 ss_config.sh 的 SS_RTC 选择：
 #   SS_RTC=0（默认，阶段1）：用户态常驻 + deferSuspend 轻休眠，确保定时更新一定发生。
 #     不深睡，续航约 1–2 天。适合先验证功能、或阶段2 事件链路在真机不可用时兜底。
-#   SS_RTC=1（阶段2）：监听 powerd 的 readyToSuspend / wakeupFromSuspend 事件，
-#     在 readyToSuspend 里用 lipc rtcWakeup 设下一次唤醒闹钟并关 WiFi 进入真深睡；
-#     RTC 到点唤醒后开 WiFi 取图、刷屏，再回休眠。目标：不接电源撑一周。
+#   SS_RTC=1（阶段2）：真深睡 + RTC 闹钟每小时唤醒，目标不接电源撑一周。
+#     2026-11-08 按上游 kndl-online-screensaver 架构重写，修复「整点全不醒」：
+#       * 主循环用「挂钟绝对截止时刻 + lipc-wait-event -s <剩余秒>」带超时等待，
+#         事件流断了超时也会返回，不再无限阻塞；
+#       * rtcWakeup 只在 readyToSuspend 状态设置并检查返回码（其它状态 powerd
+#         返回 lipcPropErrInvalidState，旧版在这些状态静默失败却以为兜底生效）；
+#       * 闹钟设置失败 → 自动切换「保持唤醒」模式，靠挂钟看门狗保证整点更新，
+#         下一周期重试成功后自动回到深睡；不是永久降级，是按周期自愈。
 #
-# 阶段2 关键约束（fanzhh / KindleCron 实证，5.11 原生 powerd）：
-#   * rtcWakeup 只能在 readyToSuspend 里设置；直接写 /sys wakealarm 会被 powerd
-#     休眠末段用 rtcWakeup=0 覆盖，无效（咱 9:00 失败就是栽在这）。
+# 阶段2 关键约束（上游源码 / MobileRead t=236104 / fanzhh 实证）：
+#   * rtcWakeup 只在 readyToSuspend 被 powerd 接受；直接写 /sys wakealarm 会被
+#     powerd 休眠末段用 rtcWakeup=0 覆盖，无效（只读校验可以做，不要写）。
+#   * lipc-wait-event 要同时监听 wakeupFromSuspend 与 resuming（部分机型只发其一）。
 #   * BusyBox sleep 基于 CLOCK_MONOTONIC，设备休眠时被冻结；所有计时一律用
 #     挂钟 date +%s，绝不用 sleep 累计判断间隔。
 #   * 唤醒后 WiFi 重连 15–30s+，取图逻辑（ss_update_once.sh）内部已做三段重试。
-#   * 唯一真机未知数：5.16.2.1.1 + linkss 接管休眠下，powerd 事件是否照常触发、
-#     rtcWakeup 是否真唤醒、eips 在唤醒瞬间能否正确重绘屏保——需在真机验证。
-#     验证方式：设 SS_RTC=1 跑几天；若发现整点不更新/不唤醒，改回 SS_RTC=0 即退回阶段1。
+#   * 每次设闹钟成功/失败、每次更新都写日志，便于回溯「哪一轮闹钟没设上」。
 export PATH=/usr/sbin:/usr/bin:/bin:/sbin:$PATH
 
 CONF=/mnt/us/dash/ss_config.sh
@@ -111,9 +115,9 @@ phase1_loop() {
     done
 }
 
-# ---- 阶段2：RTC 真深睡（事件驱动，目标续航一周）----
-set_rtc_wakeup() {
-    # 以挂钟算「距下一个更新点」的相对秒数（busybox sleep 休眠时冻结，绝不用它计时）
+# ---- 阶段2：RTC 真深睡（挂钟截止 + 带超时事件循环 + 闹钟校验 + 自愈）----
+# 距下一个更新点的秒数；全部用挂钟计算，绝不依赖 suspend 时被冻结的 sleep 累计。
+secs_to_next_slot() {
     HM=$(date +'%H %M'); H=${HM% *}; M=${HM#* }
     H=$(( ${H#0} )); M=$(( ${M#0} ))
     CUR=$(( H * 60 + M ))
@@ -126,71 +130,101 @@ set_rtc_wakeup() {
         fi
     done
     [ -n "$NEXT" ] || NEXT=$(( 1440 + ${FIRST} * 60 ))
-    SEC=$(( (NEXT - CUR) * 60 - $(date +%S) ))
-    [ "$SEC" -lt 10 ] && SEC=$(( SEC + 60 ))
-    # rtcWakeup 只能在 readyToSuspend 里设；重试 4 次提高成功率（fanzhh 做法）
-    I=0
-    while [ "$I" -lt 4 ]; do
-        lipc-set-prop -i com.lab126.powerd rtcWakeup "$SEC" 2>/dev/null
-        I=$(( I + 1 ))
-    done
-    log "rtcWakeup=${SEC}s（下次更新点）"
+    S=$(( (NEXT - CUR) * 60 - $(date +%S) ))
+    [ "$S" -lt 10 ] && S=$(( S + 60 ))
+    echo "$S"
+}
+
+# 只在 readyToSuspend 状态调用。检查 lipc 返回码与 stderr：
+# powerd 在其它状态会返回 lipcPropErrInvalidState，旧版静默忽略却以为设上了。
+set_rtc_wakeup() {
+    SEC="$1"; REASON="${2:-suspend}"
+    [ "$SEC" -gt 0 ] || { log "RTC($REASON): 秒数非法 $SEC"; return 1; }
+    OUT=$(lipc-set-prop -i com.lab126.powerd rtcWakeup "$SEC" 2>&1); RC=$?
+    if [ "$RC" -eq 0 ] && ! echo "$OUT" | grep -qiE 'error|invalid'; then
+        AL=""; F=""
+        for F in /sys/class/rtc/rtc0/wakealarm /sys/class/rtc/rtc1/wakealarm; do
+            [ -r "$F" ] && { AL=$(cat "$F" 2>/dev/null); break; }
+        done
+        log "RTC($REASON): OK ${SEC}s 后唤醒 (wakealarm=${AL:-不可读})"
+        return 0
+    fi
+    log "RTC($REASON): 失败 rc=$RC out=$OUT"
+    return 1
 }
 
 phase2_loop() {
-    log "===== 阶段2 RTC 深睡模式（SS_RTC=$SS_RTC）====="
+    log "===== 阶段2 RTC 深睡（挂钟看门狗版，SS_RTC=$SS_RTC）====="
     startup_refresh_if_stale
-    # 【兜底·关键】启动时无论如何先设一次下次闹钟。若进程是在设备已处于挂起态时
-    # 被拉起（如 KUAL 在线更新/重启守护），挂起事件不会再次触发，仅靠事件补设会
-    # 留下空窗；这里主动兜底，保证「启动即带闹钟」。
-    set_rtc_wakeup
-    log "启动已兜底设下次唤醒闹钟"
-    log "进入事件监听（goingToScreenSaver / readyToSuspend / wakeupFromSuspend）"
+    # 上游实证：wakeupFromSuspend 与 resuming 都要监听（部分机型只发其一）。
+    # goingToScreenSaver 仅记录，不在该状态设闹钟（会被 powerd 拒绝）。
+    EVENTS='readyToSuspend,wakeupFromSuspend,resuming,goingToScreenSaver'
+
     while true; do
-        # 阻塞等待下一个 powerd 事件；无事件则不耗电（区别于阶段1 的轮询）
-        EV=$(lipc-wait-event com.lab126.powerd \
-                'goingToScreenSaver,wakeupFromSuspend,readyToSuspend' 2>/dev/null)
-        # 空返回（lipc 异常/超时）保护：避免空转忙循环
-        if [ -z "$EV" ]; then
-            sleep 30
-            continue
+        # 本轮以挂钟绝对截止时刻为准，全程不受事件流是否中断影响。
+        SECS=$(secs_to_next_slot)
+        ENDWAIT=$(( $(date +%s) + SECS ))
+        ALARM_OK=0
+        TRIES=0
+        log "本轮 ${SECS}s 后截止（ENDWAIT=$ENDWAIT）"
+
+        # 等待窗口：-s 超时保证「一个事件都不来」也会返回，绝不无限阻塞。
+        # 闹钟未确认时把单次等待切成 60s 小段，每返回一次续 deferSuspend，
+        # 防止看门狗进程在等待中途被 powerd 冻住（否则自愈会失效）。
+        while :; do
+            NOW=$(date +%s)
+            REMAIN=$(( ENDWAIT - NOW ))
+            [ "$REMAIN" -le 0 ] && break
+            WAITSEC=$REMAIN
+            if [ "$ALARM_OK" = "0" ] && [ "$WAITSEC" -gt 60 ]; then WAITSEC=60; fi
+            EV=$(lipc-wait-event -s "$WAITSEC" com.lab126.powerd "$EVENTS" 2>/dev/null)
+            if [ "$ALARM_OK" = "0" ]; then
+                # 闹钟未确认：续期保持唤醒；sleep 5 抑制事件风暴导致的高频空转
+                # （真机 -s 60 本就阻塞，这层是双保险，代价可忽略）。
+                lipc-set-prop -i com.lab126.powerd deferSuspend 120 2>/dev/null
+                sleep 5
+            fi
+            case "$EV" in
+                *readyToSuspend*)
+                    R=$(( ENDWAIT - $(date +%s) ))
+                    [ "$R" -lt 10 ] && R=10
+                    # 每轮最多尝试 3 次，避免事件风暴下高频空转耗电；
+                    # 超过后只靠挂钟看门狗保持唤醒，不再重复 lipc 调用。
+                    if [ "$TRIES" -lt 3 ]; then
+                        TRIES=$(( TRIES + 1 ))
+                        if set_rtc_wakeup "$R" suspend; then
+                            ALARM_OK=1
+                            lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null
+                        else
+                            # 自愈：闹钟没设上就绝不让设备睡死。deferSuspend 保持唤醒，
+                            # 靠挂钟超时在本轮截止时刻照常更新；下一轮自动重试。
+                            lipc-set-prop -i com.lab126.powerd deferSuspend $(( R + 60 )) 2>/dev/null
+                            log "闹钟失败(第${TRIES}次) -> deferSuspend 保持唤醒，看门狗接管本轮"
+                        fi
+                    fi
+                    ;;
+                *wakeupFromSuspend*|*resuming*)
+                    # 防更新途中被 powerd 重新挂起
+                    lipc-set-prop -i com.lab126.powerd deferSuspend 180 2>/dev/null
+                    log "收到唤醒/恢复事件: $EV"
+                    ;;
+                *goingToScreenSaver*)
+                    log "进入屏保（只在 readyToSuspend 时设闹钟）"
+                    ;;
+            esac
+        done
+
+        # 到点必更新：这是目标本身。闹钟是否设上只影响「中间能否深睡省电」，
+        # 不影响「整点一定刷新」。
+        log "到达更新点，开始更新（本轮闹钟=${ALARM_OK}）"
+        if wifi_restore; then
+            do_update
+        else
+            log "WiFi 未恢复，跳过本次取图（下个整点再试）"
         fi
-        case "$EV" in
-            *readyToSuspend*)
-                # 即将休眠：设下次 RTC 唤醒闹钟 + 关 WiFi 进入真深睡省电
-                set_rtc_wakeup
-                lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null
-                log "设唤醒闹钟并关 WiFi，进入深睡"
-                ;;
-            *wakeupFromSuspend*)
-                # 被 RTC 唤醒：恢复 WiFi -> 取图 -> 刷屏；之后框架自动重新休眠
-                # 先 deferSuspend 一段时间，防止更新途中被 powerd 重新挂起而漏掉
-                # 下一次 readyToSuspend（那会导致 rtcWakeup 没设上、后续不再唤醒）。
-                lipc-set-prop -i com.lab126.powerd deferSuspend 180 2>/dev/null
-                log "RTC 唤醒，开始恢复 WiFi 并取图"
-                if wifi_restore; then
-                    do_update
-                else
-                    log "RTC 唤醒但 WiFi 未恢复，跳过本次更新（等下个整点）"
-                fi
-                # 【兜底·关键】无论本次取图成功与否，都在唤醒后主动设下一次闹钟。
-                # 旧逻辑只在 goingToScreenSaver / readyToSuspend 里设闹钟，依赖
-                # 取图后设备重新挂起时补设；一旦那个挂起事件漏触发（或 dance 的
-                # toggleSuspend 让 powerd 误判已挂起、或本窗口进程被重启），下一次
-                # 整点的 rtcWakeup 就成了空窗，设备直接睡死在上一帧，后续整点全不醒
-                # （典型表现：22 点有、23 点没，且跨天 23/00 点反复中招）。
-                # 在唤醒分支主动兜底设一次，使「每小时唤醒→顺手设下个小时」自成闭环，
-                # 与挂起事件的补设互为冗余，单点漏设不再级联。
-                set_rtc_wakeup
-                lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null
-                log "唤醒后已兜底设下次闹钟并关 WiFi"
-                ;;
-            *goingToScreenSaver*)
-                # 进入屏保（如手动按电源，非 RTC 唤醒）：确保下次休眠带唤醒闹钟
-                set_rtc_wakeup
-                log "进入屏保，已设下次唤醒"
-                ;;
-        esac
+        lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null
+        lipc-set-prop -i com.lab126.powerd deferSuspend 0 2>/dev/null
+        sleep 1
     done
 }
 
