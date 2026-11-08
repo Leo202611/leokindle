@@ -17,7 +17,7 @@ export PATH=/usr/sbin:/usr/bin:/bin:/sbin:$PATH
 
 # 脚本版本号：每次实质改动都 +1，便于从 ntfy 遥测确认设备上跑的是哪一版（避免再出现
 # 「改了半天其实没部署上去」的盲区）。格式 YYYYMMDD.N。
-SVER="20261108.3"
+SVER="20261109.6"
 
 CONF=/mnt/us/dash/ss_config.sh
 [ -f "$CONF" ] && . "$CONF"
@@ -179,6 +179,24 @@ dbg "START"
 # 20:58 补刷应显示 18:00 那张，而不是 20:00，否则 5 个时辰的设定就失去意义。
 HM=$(date +%H); HH=$(( ${HM#0} ))
 M=$(date +%M); M=$(( ${M#0} ))
+S=$(date +%S); S=$(( ${S#0} ))
+# 【边界修正 2026-11-09 07:3x】只改这里的取图时刻换算，调度器（fanzhh 移植版）一行不动。
+# 起因：fanzhh 主循环是「距上次更新 INTERVAL」的相对间隔，实测触发点总落在
+#   槽位前 1~3 秒（06:39:59 / 06:59:59 / 07:19:59）。若按「≤ 当前分钟」取槽位，
+#   06:59:59 会取 ss_06_40.png（脚注 06:40），于是看起来像「7:00 没更新」，
+#   但遥测显示 07:00:02 eips OK 确实刷了。
+# fanzhh 原版没有这个问题：他的 ss-install.sh 每次现渲染当时画面，没有槽位概念。
+# 本项目用 CI 预渲染 ss_HH_MM.png，故需在取图边界把「即将到达的槽位」算进来：
+#   秒数 ≥55 时把分钟进位（含跨小时 HH+1），再用进位后的 HH/M 求槽位。
+# 这是取图适配层的边界修正，不是新调度机制、不碰电源链路。
+if [ "$S" -ge 55 ]; then
+    M=$(( M + 1 ))
+    if [ "$M" -ge 60 ]; then
+        M=0
+        HH=$(( HH + 1 ))
+        [ "$HH" -ge 24 ] && HH=0
+    fi
+fi
 # 当前槽位分钟：SS_SLOT_MINUTES 中 ≤ 当前分钟的最大值；若当前分钟早于首个槽位
 # （理论上不会发生，因 SS_SLOT_MINUTES 含 0），取首个槽位。
 SM=""
@@ -189,8 +207,8 @@ done
 FN=""
 case " $SS_HOURS " in *" $HH "*) FN=$(printf 'ss_%02d_%02d.png' "$HH" "$SM") ;; esac
 [ -n "$FN" ] || FN="ss_latest.png"
-log "本地 $HH:$M 时，槽位分钟 $SM，目标图: ${FN}（更新点: ${SS_HOURS}）"
-dbg "plan HH=$HH M=$M SM=$SM FN=$FN"
+log "取图时刻 $HH:$M（秒 $S 已做边界进位），槽位分钟 $SM，目标图: ${FN}"
+dbg "plan HH=$HH M=$M S=$S SM=$SM FN=$FN"
 
 # 更新期间阻止设备提前重新挂起：后台 do_update 若在「重连 WiFi → 拉图 → eips」途中被
 # powerd 重新挂起，会卡在 suspended 态（WiFi 还开着、进程未退出），eips 写不进帧缓冲，
