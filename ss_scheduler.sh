@@ -38,7 +38,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH
 export PATH
 
 # 版本号：仅用于 deploy_v5.sh 自证遥测确认设备上跑的是哪一版（分发链路，非调度机制）
-SVER="20261109.5"
+SVER="20261109.7"
 
 CONF=/mnt/us/dash/ss_dash.conf          # M3/M5：可选，改频率不必改脚本
 POLL=60
@@ -219,15 +219,36 @@ watch_events &
 WATCHER=$!
 trap 'kill "$WATCHER" 2> /dev/null' EXIT INT TERM
 
-last=$(cat "$STAMP" 2> /dev/null || echo 0)
-case "$last" in '' | *[!0-9]*) last=0 ;; esac
+# 【M6 · 2026-11-09 07:4x 用户选定】把 fanzhh 的「now-last >= INTERVAL」相对间隔
+#   判据换成【绝对槽位判据】，来源另外两份已实机验证的 upstream：
+#     Basti189 bin/scheduler.sh L85  CURRENT_DAY_SECONDS = H*3600+M*60+S
+#     Basti189 bin/scheduler.sh L104-106  COMPLETE_INTERVALS = PERIOD_ELAPSED / INTERVAL
+#     zpetterd kindle/bin/scheduler.sh L79-120  get_time_to_next_update（按当天绝对分钟算下个槽位）
+#   为何改：fanzhh 相对间隔在每次部署/重启后会重置计时起点（07:36 部署 → 下次 07:56），
+#   于是 7:40 槽位被跳过；用户要求每个 :00/:20/:40 都要更新。
+#   槽位编号 = 当天绝对秒数 / INTERVAL，边界天然落在本地 :00/:20/:40，
+#   与计时起点、重启、部署完全无关。仅改主循环判据这一处，
+#   watch_events 后台 / 三段 WiFi 重试 / handle_event / STAMP 写入 全部保持原文不动。
+#   注意：STAMP 仍按 fanzhh 原样写 epoch 秒（事件回调 L164 也写它），
+#   故主循环判据改用独立的内存变量 last_slot，不把 STAMP 当槽位基准。
+#   【配置约束】INTERVAL 必须与 CI 的 SS_SLOT_MINUTES 对齐：当前 1200s ↔ "0 20 40"。
+#   若改 INTERVAL，槽位边界会随之改变，须同步改 CI 与设备端 SS_SLOT_MINUTES，
+#   否则「判据槽位」与「云端预渲染的槽位图」会错位。
+last_slot=-1
 
 while true; do
     load_conf
-    now=$(date +%s 2> /dev/null || echo 0)
-    if [ "$now" -gt 0 ] && [ $((now - last)) -ge "$INTERVAL" ]; then
+    HM=$(date +'%H %M %S' 2>/dev/null)
+    H=${HM%% *}; REST=${HM#* }; M=${REST%% *}; S=${REST#* }
+    H=${H#0}; [ -z "$H" ] && H=0      # 去前导零，避免 ash 把 08/09 当八进制
+    M=${M#0}; [ -z "$M" ] && M=0
+    S=${S#0}; [ -z "$S" ] && S=0
+    DAYSEC=$(( H * 3600 + M * 60 + S ))
+    SLOT_NOW=$(( DAYSEC / INTERVAL ))
+    if [ "$SLOT_NOW" -ne "$last_slot" ]; then
+        log "槽位 $SLOT_NOW 到达（${H}:${M}:${S}），触发更新"
         do_update
-        last=$(date +%s 2> /dev/null || echo "$now")
+        last_slot=$SLOT_NOW
         date +%s > "$STAMP" 2> /dev/null
     fi
     sleep "$POLL"
