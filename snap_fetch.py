@@ -65,16 +65,24 @@ def fetch_latest_attachment():
 
 
 def parse_dims(fname):
-    m = re.search(r"fb_(\d+)x(\d+)_(\d+)bpp", fname)
+    m = re.search(r"fb_(\d+)x(\d+)_(\d+)bpp(?:_s(\d+))?", fname)
     if m:
-        return int(m.group(1)), int(m.group(2)), int(m.group(3))
-    return DEFAULT_W, DEFAULT_H, DEFAULT_BPP
+        return int(m.group(1)), int(m.group(2)), int(m.group(3)), (int(m.group(4)) if m.group(4) else None)
+    return DEFAULT_W, DEFAULT_H, DEFAULT_BPP, None
 
 
-def raw_to_png(raw, w, h, bpp, out_path, rotate=0):
+def raw_to_png(raw, w, h, bpp, out_path, rotate=0, stride=None):
     from PIL import Image
-    n = w * h * (bpp // 8)
-    buf = raw[:n]
+    bppb = bpp // 8
+    if stride and stride > w * bppb:
+        # 帧缓冲按行 stride 对齐填充：逐行取前 w*bppb 字节，丢弃行尾 padding
+        rows = []
+        for y in range(h):
+            off = y * stride
+            rows.append(raw[off:off + w * bppb])
+        buf = b"".join(rows)
+    else:
+        buf = raw[:w * h * bppb]
     if bpp == 16:
         import array
         nums = array.array("H")
@@ -119,10 +127,10 @@ def main():
     if not res:
         sys.exit(1)
     raw, fname = res
-    w, h, bpp = parse_dims(fname)
-    print(f"[i] 附件 {fname}  推断尺寸 {w}x{h} bpp={bpp}  原始 {len(raw)} 字节")
+    w, h, bpp, stride = parse_dims(fname)
+    print(f"[i] 附件 {fname}  推断尺寸 {w}x{h} bpp={bpp} stride={stride}  原始 {len(raw)} 字节")
     try:
-        out = raw_to_png(raw, w, h, bpp, args.out, rotate=args.rotate)
+        out = raw_to_png(raw, w, h, bpp, args.out, rotate=args.rotate, stride=stride)
     except Exception as e:
         print(f"[E] 转换失败: {e}", file=sys.stderr)
         sys.exit(1)

@@ -58,14 +58,16 @@ snap_fb() {
     FB=/tmp/fb.raw
     BPP=$(cat /sys/class/graphics/fb0/bits_per_pixel 2>/dev/null)
     VSZ=$(cat /sys/class/graphics/fb0/virtual_size 2>/dev/null)
+    STRIDE=$(cat /sys/class/graphics/fb0/stride 2>/dev/null)
     [ -n "$BPP" ] && [ -n "$VSZ" ] || { log "截图跳过：读不到 fb0 sysfs"; return 0; }
     W=${VSZ%,*}; H=${VSZ#*,}
+    [ -n "$STRIDE" ] || STRIDE=$(( W * BPP / 8 ))
     N=$(( W * H * BPP / 8 ))
     [ "$N" -gt 0 ] 2>/dev/null || { log "截图跳过：尺寸非法 ${W}/${H}/${BPP}"; return 0; }
     cat /dev/fb0 > "$FB" 2>/dev/null
     [ -s "$FB" ] || { log "截图跳过：fb0 读取为空"; return 0; }
     HH=$(date +'%m-%d %H:%M')
-    FN="fb_${W}x${H}_${BPP}bpp.raw"
+    FN="fb_${W}x${H}_${BPP}bpp_s${STRIDE}.raw"
     if curl -sL $CK -T "$FB" -H "Title: 屏保实拍 $HH" -H "Filename: $FN" \
          -H "Content-Type: application/octet-stream" "$SS_SNAP_URL" 2>/dev/null; then
         log "屏保实拍已上传 ntfy($SS_SNAP_TOPIC): $FN"
