@@ -29,6 +29,7 @@ export PATH=/usr/sbin:/usr/bin:/bin:/sbin:$PATH
 CONF=/mnt/us/dash/ss_config.sh
 [ -f "$CONF" ] && . "$CONF"
 [ -n "${SS_HOURS:-}" ]         || SS_HOURS="6 9 12 15 18"
+[ -n "${SS_SLOT_MINUTES:-}" ]  || SS_SLOT_MINUTES="0"
 [ -n "${SS_TEST_INTERVAL:-}" ] || SS_TEST_INTERVAL=0
 [ -n "${SS_LOG:-}" ]           || SS_LOG="/mnt/us/dash/ss.log"
 [ -n "${SS_LAST:-}" ]          || SS_LAST="/mnt/us/dash/ss_last"
@@ -47,20 +48,19 @@ do_update() {
     log "---- 更新结束 用时 $(( $(date +%s) - T0 ))s ----"
 }
 
+# 基于 SS_SLOT_MINUTES（每小时内的分钟槽位，如 "0 20 40"）算距下次唤醒的秒数。
+# SS_SLOT_MINUTES 是「小时内的分钟」，不再乘 60；NEXT 也以分钟计，乘以 60 得秒。
 next_slot_secs() {
-    HM=$(date +'%H %M'); H=${HM% *}; M=${HM#* }
-    H=$(( ${H#0} )); M=$(( ${M#0} ))
-    CUR=$(( H * 60 + M ))
+    M=$(date +'%M'); M=$(( ${M#0} ))
     FIRST=""; NEXT=""
-    for s in $SS_HOURS; do
+    for s in $SS_SLOT_MINUTES; do
         [ -z "$FIRST" ] && FIRST=$s
-        SM=$(( ${s} * 60 ))
-        if [ "$SM" -gt "$CUR" ]; then
-            if [ -z "$NEXT" ] || [ "$SM" -lt "$NEXT" ]; then NEXT=$SM; fi
+        if [ "$s" -gt "$M" ]; then
+            if [ -z "$NEXT" ] || [ "$s" -lt "$NEXT" ]; then NEXT=$s; fi
         fi
     done
-    [ -n "$NEXT" ] || NEXT=$(( 1440 + ${FIRST} * 60 ))
-    echo $(( (NEXT - CUR) * 60 ))
+    [ -n "$NEXT" ] || NEXT=$(( 60 + ${FIRST} ))
+    echo $(( (NEXT - M) * 60 ))
 }
 
 slot_id() {
@@ -128,20 +128,19 @@ phase1_loop() {
 # 核心不变量：readyToSuspend 每轮必设 rtcWakeup（吃满 powerd 重复事件），故永不睡死。
 # 事件时序（用户按电源进待机）：goingToScreenSaver → … → readyToSuspend → 挂起
 # 唤醒（RTC/电源键）：wakeupFromSuspend → resuming → (无操作则) goingToScreenSaver → readyToSuspend
+# 同上，但减去当前秒数得到精确的 rtcWakeup 相对秒数（phase2 用）。
+# 基于 SS_SLOT_MINUTES（每小时内的分钟槽位）。
 secs_to_next_slot() {
-    HM=$(date +'%H %M'); H=${HM% *}; M=${HM#* }
-    H=$(( ${H#0} )); M=$(( ${M#0} ))
-    CUR=$(( H * 60 + M ))
+    M=$(date +'%M'); M=$(( ${M#0} ))
     FIRST=""; NEXT=""
-    for s in $SS_HOURS; do
+    for s in $SS_SLOT_MINUTES; do
         [ -z "$FIRST" ] && FIRST=$s
-        SM=$(( ${s} * 60 ))
-        if [ "$SM" -gt "$CUR" ]; then
-            if [ -z "$NEXT" ] || [ "$SM" -lt "$NEXT" ]; then NEXT=$SM; fi
+        if [ "$s" -gt "$M" ]; then
+            if [ -z "$NEXT" ] || [ "$s" -lt "$NEXT" ]; then NEXT=$s; fi
         fi
     done
-    [ -n "$NEXT" ] || NEXT=$(( 1440 + ${FIRST} * 60 ))
-    S=$(( (NEXT - CUR) * 60 - $(date +%S) ))
+    [ -n "$NEXT" ] || NEXT=$(( 60 + ${FIRST} ))
+    S=$(( (NEXT - M) * 60 - $(date +%S) ))
     [ "$S" -lt 10 ] && S=$(( S + 60 ))
     echo "$S"
 }
