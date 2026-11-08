@@ -81,7 +81,7 @@ say() {
 # 部署自证遥测（2026-11-08）：把「设备到底拉到了哪一版」上报 ntfy，彻底消除
 # 「改了半天其实没部署上去 / GitHub CDN 缓存旧版」的盲区。复用电量上报同款 ntfy POST
 # 通道（已验证可达），最好努力、失败静默。
-DEPLOY_VER="20261108.6"
+DEPLOY_VER="20261109.1"
 DEPLOY_TOPIC="k8dash_deploy_4f2a"
 dep_report() {
     curl -sL -k -m 5 -X POST -H "Title: deploy" --data-binary "$1" "https://ntfy.sh/$DEPLOY_TOPIC" >/dev/null 2>&1
@@ -177,7 +177,7 @@ pull_sh() {
 for f in $SH_FILES; do pull_sh "$f"; done
 
 # 部署自证：上报 SRV_OK 与关键脚本是否含新版 SVER（设备到底拉到没有，一目了然）
-dep_report "deploy v$DEPLOY_VER SRV_OK=$SRV_OK updSVER=$(grep -c 'SVER=\"20261108.3\"' "$DST/ss_update_once.sh" 2>/dev/null) schedSVER=$(grep -c 'SVER=\"20261108.6\"' "$DST/ss_scheduler.sh" 2>/dev/null) wifiToggle=$(grep -c 'wirelessEnable 0' "$DST/ss_config.sh" 2>/dev/null)"
+dep_report "deploy v$DEPLOY_VER SRV_OK=$SRV_OK updSVER=$(grep -c 'SVER=\"20261108.3\"' "$DST/ss_update_once.sh" 2>/dev/null) schedSVER=$(grep -c 'SVER=\"20261109.1\"' "$DST/ss_scheduler.sh" 2>/dev/null) wifiToggle=$(grep -c 'wirelessEnable 0' "$DST/ss_config.sh" 2>/dev/null)"
 
 # ---- 2. 拉图（电脑 HTTP -> GitHub 当小时 -> GitHub index 最新）----
 # 第三层很重要：Kindle 设备时钟可能不准（校时失败时），
@@ -421,5 +421,5 @@ if [ -z "$BOOT" ] && [ -f "$DST/ss_enable.sh" ] && [ ! -f "$DST/ss_no_auto" ]; t
     fi
 fi
 
-dep_report "deploy DONE v$DEPLOY_VER updSVER=$(grep -c 'SVER=\"20261108.3\"' "$DST/ss_update_once.sh" 2>/dev/null) schedSVER=$(grep -c 'SVER=\"20261108.6\"' "$DST/ss_scheduler.sh" 2>/dev/null) enabled=$([ -f "$DST/ss_enabled" ] && echo yes || echo no)"
+dep_report "deploy DONE v$DEPLOY_VER updSVER=$(grep -c 'SVER=\"20261108.3\"' "$DST/ss_update_once.sh" 2>/dev/null) schedSVER=$(grep -c 'SVER=\"20261109.1\"' "$DST/ss_scheduler.sh" 2>/dev/null) enabled=$([ -f "$DST/ss_enabled" ] && echo yes || echo no)"
 say "===== 安装完成（全程 WiFi，未使用 USB）====="
