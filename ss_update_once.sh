@@ -41,6 +41,40 @@ CK=""
 [ -n "${SS_BATT_TOPIC:-}" ]  || SS_BATT_TOPIC="k8dash_batt_7f3c9e2a"
 SS_BATT_URL="https://ntfy.sh/$SS_BATT_TOPIC"
 
+# 屏保实拍截图中继站（2026-11-08 新增）：自动更新刷屏后由调度器抓 /dev/fb0 原始帧缓冲
+# 上传到独立 ntfy topic 附件，Mac 端 snap_fetch.py 转换后即可免拍照查看屏保实拍。
+# 设 SS_SNAP_ENABLE=0 可整体关闭；topic 名随机化避免被猜到。
+[ -n "${SS_SNAP_ENABLE:-}" ] || SS_SNAP_ENABLE=1
+[ -n "${SS_SNAP_TOPIC:-}" ]  || SS_SNAP_TOPIC="k8dash_snap_3f9a2c"
+SS_SNAP_URL="https://ntfy.sh/$SS_SNAP_TOPIC"
+
+# 抓取当前帧缓冲原始数据并上传 ntfy 附件（仅调度器自动更新时 SS_SNAP=1 才调用）。
+# 此刻设备刚 eips 刷完屏、尚未重新挂起，/dev/fb0 正是屏保画面。
+# 用 sysfs 读真实 bpp/分辨率（不硬编码），文件名编码 WxHxBPP 供 Mac 端解析。
+# 手动「立即更新」(KUAL 2) 不设 SS_SNAP，不会抓 fb0（那会儿屏幕是 KUAL 菜单而非屏保）。
+snap_fb() {
+    [ "$SS_SNAP_ENABLE" = "1" ] || return 0
+    [ "${SS_SNAP:-0}" = "1" ] || return 0
+    FB=/tmp/fb.raw
+    BPP=$(cat /sys/class/graphics/fb0/bits_per_pixel 2>/dev/null)
+    VSZ=$(cat /sys/class/graphics/fb0/virtual_size 2>/dev/null)
+    [ -n "$BPP" ] && [ -n "$VSZ" ] || { log "截图跳过：读不到 fb0 sysfs"; return 0; }
+    W=${VSZ%,*}; H=${VSZ#*,}
+    N=$(( W * H * BPP / 8 ))
+    [ "$N" -gt 0 ] 2>/dev/null || { log "截图跳过：尺寸非法 ${W}/${H}/${BPP}"; return 0; }
+    cat /dev/fb0 > "$FB" 2>/dev/null
+    [ -s "$FB" ] || { log "截图跳过：fb0 读取为空"; return 0; }
+    HH=$(date +'%m-%d %H:%M')
+    FN="fb_${W}x${H}_${BPP}bpp.raw"
+    if curl -sL $CK -T "$FB" -H "Title: 屏保实拍 $HH" -H "Filename: $FN" \
+         -H "Content-Type: application/octet-stream" "$SS_SNAP_URL" 2>/dev/null; then
+        log "屏保实拍已上传 ntfy($SS_SNAP_TOPIC): $FN"
+    else
+        log "屏保实拍上传失败（不影响显示）"
+    fi
+    rm -f "$FB"
+}
+
 log() {
     echo "[$(date +'%m-%d %H:%M:%S')] $*" >> "$SS_LOG" 2>/dev/null
     echo "$*"
@@ -233,6 +267,10 @@ if [ "$GOT" = "1" ]; then
                 ;;
         esac
     fi
+
+    # 自动模式下抓取帧缓冲实拍（SS_SNAP=1 由调度器注入），用于免拍照验证屏保。
+    # 此刻屏幕已刷成新图且 WiFi 仍连通，正是抓 fb0 的时机。
+    snap_fb
 
     # 缓存一份到 dash 目录，供「设为屏保」与下次开机使用。
     # 用 tmp + mv：不覆写正在被 linkss 持有的 inode，也避免反复写同一簇链。

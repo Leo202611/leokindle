@@ -68,7 +68,7 @@ say() {
 # 脚本类文件：必须全部经 WiFi 下发，一个都不能依赖 USB 预置
 # ss_*.sh 是「待机画面定时更新」(每整点)：RTC 唤醒 + 单次换图 + 重新休眠，
 # 取代常亮仪表盘守护进程成为主线。ss_config.local 若存在则绝不覆盖（本地改频率用）。
-SH_FILES="dashd_v5.sh dash_on_v5.sh dash_on_land.sh dash_on_port.sh dash_off.sh dash_update.sh install_screensaver.sh ss_config.sh ss_update_once.sh ss_scheduler.sh ss_enable.sh ss_disable.sh ss_rtc.sh ss_dance.sh"
+SH_FILES="dashd_v5.sh dash_on_v5.sh dash_on_land.sh dash_on_port.sh dash_off.sh dash_update.sh install_screensaver.sh ss_config.sh ss_update_once.sh ss_scheduler.sh ss_enable.sh ss_disable.sh ss_rtc.sh ss_dance.sh ss_snap.sh"
 # 其中需要装进 KUAL bin/ 的入口
 ENTRIES="dash_on_v5.sh dash_on_land.sh dash_on_port.sh dash_off.sh dash_update.sh install_screensaver.sh ss_update_once.sh ss_enable.sh ss_disable.sh ss_rtc.sh ss_dance.sh"
 
@@ -329,6 +329,11 @@ cat > "$MENU.new" <<'JSON'
 				{
 					"name": "13 阶段2 WiFi dance:关(不推荐,会不更新)",
 					"action": "bin/ss_dance.sh 0",
+					"exitmenu": true
+				},
+				{
+					"name": "14 上传屏保图(文件·免拍照)",
+					"action": "bin/ss_snap.sh",
 					"exitmenu": true
 				}
 			]

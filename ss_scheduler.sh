@@ -220,7 +220,7 @@ phase2_loop() {
         # 否则重挂起后 e-ink 双稳态保留旧画面，自动更新"看不见"（见 11-08 排查）。
         log "到达更新点，开始更新（本轮闹钟=${ALARM_OK}）"
         if wifi_restore; then
-            SS_FORCE_EIPS=1 do_update
+            SS_FORCE_EIPS=1 SS_SNAP=1 do_update
         else
             log "WiFi 未恢复，跳过本次取图（下个整点再试）"
         fi
