@@ -23,6 +23,9 @@ if [ -n "$DPID" ] && [ -d "/proc/$DPID" ]; then
 fi
 sleep 1
 pkill -f 'dashd.*\.sh' 2>/dev/null
+# 旧的 ss_scheduler 进程（无论常亮还是屏保模式）若残留，会与新实例抢 powerd 事件
+# 且可能持续重置 preventScreenSaver=1；启用前先清掉，保证只跑一份最新代码。
+pkill -f 'ss_scheduler.sh' 2>/dev/null
 rm -f /var/local/dash_stop /var/local/dashd.pid 2>/dev/null
 say "常亮守护已清理（未改 GUI）"
 
