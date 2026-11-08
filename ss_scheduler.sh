@@ -216,9 +216,11 @@ phase2_loop() {
 
         # 到点必更新：这是目标本身。闹钟是否设上只影响「中间能否深睡省电」，
         # 不影响「整点一定刷新」。
+        # 注入 SS_FORCE_EIPS=1：自动唤醒后设备处于活跃态，必须强制 eips 写帧缓冲，
+        # 否则重挂起后 e-ink 双稳态保留旧画面，自动更新"看不见"（见 11-08 排查）。
         log "到达更新点，开始更新（本轮闹钟=${ALARM_OK}）"
         if wifi_restore; then
-            do_update
+            SS_FORCE_EIPS=1 do_update
         else
             log "WiFi 未恢复，跳过本次取图（下个整点再试）"
         fi

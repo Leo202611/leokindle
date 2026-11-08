@@ -207,20 +207,32 @@ if [ "$GOT" = "1" ]; then
         log "内容未变（与上次相同），跳过 eips 整屏刷新"
         SKIP_EIPS=1
     fi
-    # 先画到帧缓冲：设备已经处于休眠/屏保时，linkss 只在「进入屏保」那一刻读文件，
-    # 光换文件不刷屏，用户看到的仍是旧图（这正是之前 12:00 图一直挂着的原因之一）。
+    # 显示判决（2026-11-08 修正）：
+    #   * 唤醒态的「自动整点更新」必须强制 eips 写到帧缓冲——否则设备随后重新挂起，
+    #     e-ink 双稳态保留旧画面，自动更新便"看不见"（11-08 实测：11:00 已取图上报，
+    #     但屏保仍显示 10:00 旧图，根因就是唤醒后 status=Active 被旧逻辑跳过 eips）。
+    #   * 手动「立即更新」(KUAL 2) 不设 SS_FORCE_EIPS，保留旧行为：GUI 活跃时跳过
+    #     eips，用户按电源键休眠即由 linkss 显示新图，不打扰当前操作。
+    #   * 内容逐字节相同（SKIP_EIPS）则任何状态都不重绘，省电。
     PSTAT=$(lipc-get-prop com.lab126.powerd status 2>/dev/null)
-    case "$PSTAT" in
-        *Active*) log "GUI 活跃，跳过 eips（按电源键休眠即显示新图）" ;;
-        *)
-            if [ "$SKIP_EIPS" = "1" ]; then
-                log "内容未变，跳过 eips 整屏刷新（仅更新文件）"
-            else
+    if [ "$SKIP_EIPS" = "1" ]; then
+        log "内容未变，跳过 eips 整屏刷新（仅更新文件）"
+    else
+        case "$PSTAT" in
+            *Active*)
+                if [ "${SS_FORCE_EIPS:-0}" = "1" ]; then
+                    eips -f -g "$TMP" >> "$SS_LOG" 2>&1
+                    log "已强制刷屏 eips -f -g（唤醒态强制，保证自动更新可见）"
+                else
+                    log "GUI 活跃，跳过 eips（按电源键休眠即显示新图）"
+                fi
+                ;;
+            *)
                 eips -f -g "$TMP" >> "$SS_LOG" 2>&1
                 log "已刷屏 eips -f -g（仅一次整屏刷新）"
-            fi
-            ;;
-    esac
+                ;;
+        esac
+    fi
 
     # 缓存一份到 dash 目录，供「设为屏保」与下次开机使用。
     # 用 tmp + mv：不覆写正在被 linkss 持有的 inode，也避免反复写同一簇链。
