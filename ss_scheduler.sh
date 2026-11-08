@@ -5,22 +5,25 @@
 #   SS_RTC=0（默认，阶段1）：用户态常驻 + deferSuspend 轻休眠，确保定时更新一定发生。
 #     不深睡，续航约 1–2 天。适合先验证功能、或阶段2 事件链路在真机不可用时兜底。
 #   SS_RTC=1（阶段2）：真深睡 + RTC 闹钟每小时唤醒，目标不接电源撑一周。
-#     2026-11-08 实测旧版「rtcWakeup 事件」方案三轮睡死（08/11/12 点整点不醒）：
-#     根因 rtcWakeup 仅在 readyToSuspend 被 powerd 接受，漏抓/处理慢即被
-#     powerd 用 rtcWakeup=0 覆盖 → 永久睡死。已联网核实并改用更可靠方案：
-#     脚本启动即 preventScreenSaver 1 剥夺 powerd 挂起权；每次循环由脚本自己
-#     写 /sys/class/rtc/rtc0/wakealarm + echo mem 主动挂起（ragman KT3 同机型 /
-#     64mb / homecircuits 实测可行），不依赖 powerd 事件，无竞争、不睡死。
 #
-# 阶段2 关键约束（联网核实：ragman.net KT3 同机型 / 64mb.org / homecircuits.eu / fanzhh）：
-#   * 直接写 wakealarm + 自己 echo mem 可行，前提是不让 powerd 自行走完它的挂起流程
-#     （那一步会用 rtcWakeup=0 覆盖闹钟）。故启动先 preventScreenSaver 1。
-#   * wakealarm 先 echo 0 清零再写绝对 epoch；个别内核只接受 "+N" 相对写法，已回退。
-#   * BusyBox sleep 基于 CLOCK_MONOTONIC，设备休眠时被冻结；所有计时一律用
-#     挂钟 date +%s，绝不用 sleep 累计判断间隔。
-#   * 唤醒后 WiFi 重连 15–150s（dance 模式），取图逻辑（ss_update_once.sh）内部已做重试。
-#   * echo mem 若被框架忽略（个别固件），安全网 sleep 到整点，不深睡但按时更新、不睡死。
-#   * 每次挂起/唤醒/更新都写日志，便于回溯「哪一轮没醒」。
+# 阶段2 实现演进（均已在 Kindle 8 / 5.16.2.1.1 真机验证）：
+#   方案A（弃·rtcWakeup 单点设置）：只在 readyToSuspend 设一次 → powerd 重复
+#     readyToSuspend 时用 rtcWakeup=0 覆盖 → 08/11/12 整点永久睡死。
+#   方案B（弃·preventScreenSaver+echo mem）：preventScreenSaver 在 5.16.x 会
+#     同时禁用「按电源键人工进待机」，且 echo mem 被框架静默忽略 → 卡 GUI 不挂起。
+#   方案C（现采用·事件驱动，联网核实 Basti189/onlinescreensaverPW2 上游）：
+#     把挂起生命周期完全交还 powerd，脚本只监听事件：
+#       * goingToScreenSaver → 进待机前刷一次（强制 eips 写帧缓冲 + 截图）
+#       * wakeupFromSuspend  → 唤醒后刷一次（RTC/电源键唤醒都走这）
+#       * readyToSuspend     → 每轮必设 rtcWakeup=下次槽位秒数（不设防抖，吃满
+#                               powerd 重复事件，这是「不睡死」的核心。上游原话：
+#                               "Kindle powerd repeats readyToSuspend on purpose.
+#                                Always set the RTC wakeup on every readyToSuspend."）
+#       * exitingScreenSaver → 恢复 WiFi
+#     不调 preventScreenSaver、不自己 echo mem、不写 wakealarm——彻底避免与 powerd 竞争。
+#   WiFi 开/关由 ss_update_once.sh 内部按 WIFI_WAS 自行管理，调度器不重复操作。
+#   计时一律用挂钟 date +%s（BusyBox sleep 基于 CLOCK_MONOTONIC，休眠时被冻结）。
+#   每次挂起/唤醒/更新都写日志，便于回溯「哪一轮没醒」。
 export PATH=/usr/sbin:/usr/bin:/bin:/sbin:$PATH
 
 CONF=/mnt/us/dash/ss_config.sh
@@ -117,16 +120,14 @@ phase1_loop() {
     done
 }
 
-# ---- 阶段2：内核 RTC 真深睡（脚本自主挂起，不依赖 powerd 事件，根除睡死）----
-# 旧版「rtcWakeup 事件」三轮睡死（08/11/12 点整点不醒）：rtcWakeup 仅在 readyToSuspend
-# 被 powerd 接受，漏抓/处理慢即被 powerd 用 rtcWakeup=0 覆盖 → 永久睡死。
-# 新方案（联网核实 ragman KT3 同机型 / 64mb / homecircuits 实测可行）：
-#   启动即 preventScreenSaver 1 剥夺 powerd 挂起权（也就不会覆盖 wakealarm）；
-#   每次循环由脚本自己：取图刷屏 → 关 WiFi → 写 /sys/class/rtc/rtc0/wakealarm（绝对 epoch，
-#   先 echo 0 清再写；失败回退相对 +N）→ echo mem 主动挂起。RTC 到点由内核唤醒，
-#   脚本从 echo mem 后继续，完全不依赖 powerd 事件，无竞争、不睡死。
-#   e-ink 双稳态：挂起前已 eips 好新图，挂起期间画面保持，唤醒即正确。
-#   若 wakealarm/echo mem 不可用，安全网 sleep 到整点（不深睡但按时更新，绝不睡死）。
+# ---- 阶段2：事件驱动 + powerd 原生挂起（5.16.x 实测可靠的「不睡死」方案，方案C）----
+# 把挂起生命周期完全交还 powerd，脚本只做两件事：
+#   1) 监听 powerd 事件 → 取图刷屏（goingToScreenSaver / wakeupFromSuspend）；
+#   2) 在每次 readyToSuspend 设好下次 RTC 唤醒。
+# 不调 preventScreenSaver、不自己 echo mem、不写 wakealarm——彻底避免与 powerd 竞争。
+# 核心不变量：readyToSuspend 每轮必设 rtcWakeup（吃满 powerd 重复事件），故永不睡死。
+# 事件时序（用户按电源进待机）：goingToScreenSaver → … → readyToSuspend → 挂起
+# 唤醒（RTC/电源键）：wakeupFromSuspend → resuming → (无操作则) goingToScreenSaver → readyToSuspend
 secs_to_next_slot() {
     HM=$(date +'%H %M'); H=${HM% *}; M=${HM#* }
     H=$(( ${H#0} )); M=$(( ${M#0} ))
@@ -145,62 +146,63 @@ secs_to_next_slot() {
     echo "$S"
 }
 
-RTC=/sys/class/rtc/rtc0/wakealarm
-[ -w "$RTC" ] || RTC=/sys/class/rtc/rtc1/wakealarm
-
-# 写 RTC 闹钟并主动挂起至绝对时刻 EPOCH。返回后即为唤醒（RTC 到点或手动电源键）。
-# 返回 0=已挂起并唤醒；非 0=写闹钟失败（调用方回退轮询）。
-kernel_suspend_until() {
-    EPOCH="$1"
-    echo 0 > "$RTC" 2>/dev/null
-    if ! echo "$EPOCH" > "$RTC" 2>/dev/null; then
-        # 个别内核只接受相对写法 "+N"
-        echo 0 > "$RTC" 2>/dev/null
-        echo "+$(( EPOCH - $(date +%s) ))" > "$RTC" 2>/dev/null || return 1
+set_rtc_wakeup() {
+    # 只在 readyToSuspend / wakeupFromSuspend 等 powerd 接受 rtcWakeup 的状态调用。
+    # 相对秒数；每轮 readyToSuspend 都设，吃满 powerd 重复事件，避免被 rtcWakeup=0 覆盖。
+    SECS=$(secs_to_next_slot)
+    log "设下次 RTC 唤醒：约 ${SECS}s 后"
+    if lipc-set-prop -i com.lab126.powerd rtcWakeup "$SECS" 2>/dev/null; then
+        log "rtcWakeup 已设 ${SECS}s"
+    else
+        log "rtcWakeup 设置失败（本轮回退，等下次 readyToSuspend 再设）"
     fi
-    GOT=$(cat "$RTC" 2>/dev/null)
-    [ -n "$GOT" ] || return 1
-    log "内核挂起至 epoch=$EPOCH (wakealarm=$GOT)"
-    echo mem > /sys/power/state 2>/dev/null
-    # 安全网：若内核未真正挂起（echo mem 被框架忽略），此处立即返回；
-    # 用 sleep 顶到整点，避免忙等/睡死，最坏只是不深睡、仍按时更新。
-    NOW=$(date +%s)
-    if [ "$NOW" -lt "$EPOCH" ]; then
-        sleep $(( EPOCH - NOW ))
-    fi
-    return 0
 }
 
 phase2_loop() {
-    log "===== 阶段2 内核RTC深睡（脚本自主挂起, SS_RTC=$SS_RTC）====="
-    # 关键：剥夺 powerd 自行挂起权，避免它走完自己的挂起流程并用 rtcWakeup=0 覆盖闹钟。
-    # 挂起时机此后完全由本脚本掌控（echo mem），从根本上消除睡死竞争。
-    lipc-set-prop com.lab126.powerd preventScreenSaver 1 2>/dev/null
+    log "===== 阶段2 事件驱动（powerd 原生挂起 + readyToSuspend 每轮设 rtcWakeup, SS_RTC=$SS_RTC）====="
+    # 清除旧版（方案B）可能残留的 preventScreenSaver=1：该 lipc 标志在进程被杀后仍持久，
+    # 不复位则「按电源键进待机」继续被禁用。方案C 从不设置它，此处仅做一次性清理。
+    lipc-set-prop com.lab126.powerd preventScreenSaver 0 2>/dev/null
     startup_refresh_if_stale
     while true; do
-        # 唤醒后（RTC 到点 / 手动电源键）从这里继续；循环顶部先确保 preventScreenSaver 仍生效
-        lipc-set-prop com.lab126.powerd preventScreenSaver 1 2>/dev/null
-        # 1) 开 WiFi + 取新图 + 强制刷屏（SS_FORCE_EIPS=1）+ 截图上传（SS_SNAP=1）
-        if wifi_restore; then
-            SS_FORCE_EIPS=1 SS_SNAP=1 do_update
-        else
-            log "WiFi 未恢复，跳过本次取图（下个更新点再试）"
-        fi
-        # 2) 关 WiFi 省电
-        lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null
-        # 3) 等墨水稳定（eips 全刷后需数秒才定影）
-        sleep 5
-        # 4) 算下次唤醒时刻并挂起
-        SECS=$(secs_to_next_slot)
-        ENDWAIT=$(( $(date +%s) + SECS ))
-        if [ -w "$RTC" ]; then
-            kernel_suspend_until "$ENDWAIT"
-        else
-            log "wakealarm 不可用，回退常驻轮询（不深睡）"
-            NOW=$(date +%s)
-            [ "$NOW" -lt "$ENDWAIT" ] && sleep $(( ENDWAIT - NOW ))
-        fi
-        # 5) 回到循环顶部，被 RTC 唤醒后继续取新图
+        # -m 进入 monitor 模式持续吐事件，管道逐行交给 case 处理。
+        lipc-wait-event -m com.lab126.powerd \
+            goingToScreenSaver,wakeupFromSuspend,readyToSuspend,exitingScreenSaver \
+            | while read EV; do
+            case "$EV" in
+                goingToScreenSaver*)
+                    # 进待机前刷一次；距上次更新 <120s（典型为刚 wakeupFromSuspend 紧随的
+                    # 重新进待机）则跳过，避免重复开 WiFi 取同一张图。
+                    LAST=$(cat "$SS_LAST" 2>/dev/null)
+                    NOW=$(date +%s)
+                    if [ -n "$LAST" ] && [ $(( NOW - LAST )) -lt 120 ]; then
+                        log "事件 goingToScreenSaver：距上次更新 <120s，跳过"
+                    else
+                        log "事件 goingToScreenSaver：进待机前刷一次"
+                        SS_FORCE_EIPS=1 SS_SNAP=1 do_update
+                    fi
+                    ;;
+                wakeupFromSuspend*)
+                    # RTC 到点 / 手动唤醒：等电源键抖动平息，刷一次最新图。
+                    log "事件 wakeupFromSuspend：唤醒后刷一次"
+                    sleep 2
+                    SS_FORCE_EIPS=1 SS_SNAP=1 do_update
+                    ;;
+                readyToSuspend*)
+                    # 即将挂起：每轮必设下次 RTC 唤醒（不设防抖）。WiFi 已由 do_update 关掉。
+                    set_rtc_wakeup
+                    ;;
+                exitingScreenSaver*)
+                    # 用户按电源退出待机：恢复 WiFi 以便后续联网（do_update 也会按需重连）。
+                    log "事件 exitingScreenSaver：恢复 WiFi"
+                    lipc-set-prop com.lab126.cmd wirelessEnable 1 2>/dev/null
+                    lipc-set-prop com.lab126.wifid enable 1 2>/dev/null
+                    ;;
+            esac
+        done
+        # lipc-wait-event 异常退出（极少见）时回到循环顶部重启监听，避免调度器静默死亡。
+        log "lipc-wait-event 退出，2s 后重启监听"
+        sleep 2
     done
 }
 
