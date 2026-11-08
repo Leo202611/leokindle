@@ -15,6 +15,10 @@
 # 同小时整点兜底图 ss_HH.png（脚注 :00）；非更新点用 ss_latest.png。
 export PATH=/usr/sbin:/usr/bin:/bin:/sbin:$PATH
 
+# 脚本版本号：每次实质改动都 +1，便于从 ntfy 遥测确认设备上跑的是哪一版（避免再出现
+# 「改了半天其实没部署上去」的盲区）。格式 YYYYMMDD.N。
+SVER="20261108.3"
+
 CONF=/mnt/us/dash/ss_config.sh
 [ -f "$CONF" ] && . "$CONF"
 [ -n "${SS_HOURS:-}" ]       || SS_HOURS="6 9 12 15 18"
@@ -86,7 +90,7 @@ log() {
 # 【临时遥测 2026-11-08】上报 do_update 关键节点到 ntfy，配合调度器遥测定位 22:20 失败根因。
 DBG_TOPIC="k8dash_dbg_9c1e"
 dbg() {
-    MSG="$(date +'%m-%d %H:%M:%S') [upd] $*"
+    MSG="$(date +'%m-%d %H:%M:%S') [v$SVER][upd] $*"
     curl -sL -k -m 5 -X POST -H "Title: upd-debug" --data-binary "$MSG" "https://ntfy.sh/$DBG_TOPIC" >/dev/null 2>&1
 }
 

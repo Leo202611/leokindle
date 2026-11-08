@@ -67,7 +67,7 @@ SS_SNAP_ENABLE=0
 # 省电硬约束：单次唤醒总预算，超时即放弃，不重试，等下一个更新点。
 SS_CURL_T=20
 SS_WIFI_WAIT=20
-SS_UPDATE_TIMEOUT=60
+SS_UPDATE_TIMEOUT=120
 # 阶段2 开关：1=启用 RTC 真深睡（监听 powerd 事件、readyToSuspend 里设 rtcWakeup、
 # 唤醒后取图刷屏再睡，目标不接电源撑一周）；0=阶段1 轻休眠（回退兜底，续航 1–2 天）。
 # 【2026-11-05 默认改为 1】新部署默认走阶段2 深睡；若真机实测整点不更新/不唤醒，
@@ -79,10 +79,9 @@ SS_RTC=1
 # 唤醒后 WiFi 恢复（阶段2 深睡后必需）：
 # 5.16.x 休眠后 WiFi 在 suspended 态无法程序重连（koreader 5.18.6 / fanzhh 均已确认）。
 # 纯静默模式的总预算（秒）；fanzhh 实测需给到 ~150s 才稳（15s/30s 两段偶发失败）。
-SS_WIFI_RESTORE_T="${SS_WIFI_RESTORE_T:-150}"
-# dance 开启时，静默只做这么久的快速试探就转 dance，缩短每次唤醒、降低失败尾部风险。
-# 注：2026-11-06 过夜实测旧版 150s 空等仍 6.8h 仅掉 2%（≈7.1%/天），
-# 说明等待态并非全功率 active；此优化是"更利落"，并非续航成败的关键。
+SS_WIFI_RESTORE_T="${SS_WIFI_RESTORE_T:-45}"
+# 主力重连法已是「wirelessEnable 0->1 硬切」（见 wifi_restore，上游 KNDL.md 实测
+# 在 Screen Saver 态唯一可靠），5–8s 即可连通，无需 150s 长等。留 45s 仅作余量。
 SS_WIFI_SILENT_T="${SS_WIFI_SILENT_T:-15}"
 # 「模拟电源键」dance：toggleSuspend 强制 active 后 WiFi 约 3s 连通。
 # 【2026-11-06 真机验证】Kindle 8 / 5.16.2.1.1 + linkss：
@@ -95,45 +94,46 @@ SS_WIFI_DANCE="${SS_WIFI_DANCE:-1}"
 [ -f /mnt/us/dash/ss_config.local ] && . /mnt/us/dash/ss_config.local
 
 # 唤醒后恢复 WiFi（阶段2 深睡后必需）。返回 0=已连通。
-# 背景：5.16.x 设备 suspend 后 WiFi 断且 suspended 态无法静默重连
-#   （koreader-live-sleepscreen FW5.18.6 实测：所有静默手段全失败）。
-# 【2026-11-06 真机修正】fanzhh 在 5.11.1.1 上「静默 8/8 成功」不能外推到 5.16.x：
-#   咱 Kindle 8 虽是 i.MX，静默仍失败（00:00 不更新），必须 toggleSuspend dance（01:00 才通）。
-#   故保留静默仅作 15s 快速试探，主力是 dance。
+#
+# 【关键修正 2026-11-08】此前用 `wifid enable 1` / `ensureConnection` 重连，在 RTC 唤醒后的
+# Screen Saver 态被 wifid 全部静默丢弃（reason=inactive），导致 21:20/22:00/22:20 所有冷
+# WiFi 槽位下载失败、屏保滞留旧时刻。仅「人工开机/点 KUAL 时设备处于 Active 态」的更新
+# （21:00 部署、22:30 点菜单）才偶然成功——这正解释了为何手动能成、自动全挂。
+#
+# 上游 zpetterd/kndl-online-screensaver 的 KNDL.md 经多固件实测给出唯一可靠结论：
+#   RTC 唤醒后 powerd 停留在 Screen Saver 态，wifid 丢弃 ensureConnection / wifid enable /
+#   force_reconnect 等一切「智能」重连；唯一生效的是 **wirelessEnable 0->1 硬切**——
+#   完整 radio 重初始化绕开 inactive 门控，约 5–8s 关联成功，且不触发 Active 转换
+#   （故 eips 不会被跳过）。toggleSuspend（模拟电源键）仅作最后兜底。
+#
+# 故本函数主力即 0->1 硬切；SS_WIFI_DANCE 不再作为开关（硬切本身就是默认且唯一可靠手段）。
 wifi_restore() {
     ST=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)
     [ "$ST" = "CONNECTED" ] && return 0
-    log "wifi_restore: 当前 $ST，开始重连"
+    log "wifi_restore: 当前 $ST，开始硬切重连"
+    # 主力：wirelessEnable 0->1 完整 radio 重初始化（Screen Saver 态唯一可靠路径）
+    lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null
+    sleep 2
     lipc-set-prop com.lab126.cmd wirelessEnable 1 2>/dev/null
-    lipc-set-prop com.lab126.wifid enable 1 2>/dev/null
-    # dance 开时静默只快速试探 SS_WIFI_SILENT_T 秒即转 dance（省电）；
-    # 纯静默模式仍用完整 SS_WIFI_RESTORE_T 预算。
-    I=0
-    if [ "${SS_WIFI_DANCE:-1}" = "1" ]; then
-        MAX=${SS_WIFI_SILENT_T:-15}
-    else
-        MAX=${SS_WIFI_RESTORE_T:-150}
-    fi
+    I=0; MAX=${SS_WIFI_RESTORE_T:-45}
     while [ "$I" -lt "$MAX" ]; do
         ST=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)
-        [ "$ST" = "CONNECTED" ] && { log "wifi_restore: 静默重连成功(${I}s)"; return 0; }
-        # 主动触发一次关联 + 兜底 DHCP
-        lipc-send-event com.lab126.cmd ensureConnection "wifi:" 2>/dev/null
-        /sbin/udhcpc -n -q 2>/dev/null
-        sleep 5
-        I=$(( I + 5 ))
+        if [ "$ST" = "CONNECTED" ]; then
+            /sbin/udhcpc -n -q 2>/dev/null   # 关联成功但偶发未拿 IP，补一次 DHCP
+            log "wifi_restore: 0->1 硬切重连成功(${I}s)"
+            return 0
+        fi
+        sleep 3; I=$(( I + 3 ))
     done
-    if [ "${SS_WIFI_DANCE:-1}" = "1" ]; then
-        log "wifi_restore: 静默试探未成，尝试 toggleSuspend 模拟电源键"
-        lipc-send-event com.lab126.powerd toggleSuspend 2>/dev/null
-        I=0
-        while [ "$I" -lt 30 ]; do
-            ST=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)
-            [ "$ST" = "CONNECTED" ] && { log "wifi_restore: dance 后连通(${I}s)"; return 0; }
-            sleep 3
-            I=$(( I + 3 ))
-        done
-    fi
+    # 兜底：toggleSuspend 模拟电源键（可能转 Active，eips 会被跳过但 WiFi 可通）
+    log "wifi_restore: 0->1 硬切未成，兜底 toggleSuspend"
+    lipc-send-event com.lab126.powerd toggleSuspend 2>/dev/null
+    I=0
+    while [ "$I" -lt 30 ]; do
+        ST=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)
+        [ "$ST" = "CONNECTED" ] && { log "wifi_restore: toggleSuspend 兜底连通(${I}s)"; return 0; }
+        sleep 3; I=$(( I + 3 ))
+    done
     log "wifi_restore: 失败（WiFi 仍 $ST）"
     return 1
 }

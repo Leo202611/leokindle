@@ -26,6 +26,9 @@
 #   每次挂起/唤醒/更新都写日志，便于回溯「哪一轮没醒」。
 export PATH=/usr/sbin:/usr/bin:/bin:/sbin:$PATH
 
+# 脚本版本号：每次实质改动都 +1，便于从 ntfy 遥测确认设备上跑的是哪一版。格式 YYYYMMDD.N。
+SVER="20261108.3"
+
 CONF=/mnt/us/dash/ss_config.sh
 [ -f "$CONF" ] && . "$CONF"
 [ -n "${SS_HOURS:-}" ]         || SS_HOURS="6 9 12 15 18"
@@ -50,7 +53,7 @@ dbg() {
     DF=$(lipc-get-prop com.lab126.powerd deferSuspend 2>/dev/null)
     RT=$(lipc-get-prop com.lab126.powerd rtcWakeup 2>/dev/null)
     CM=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)
-    MSG="$(date +'%m-%d %H:%M:%S') EV=$EV defer=${DF:-?} rtc=${RT:-?} wifi=${CM:-?} slot=$(date +%H:%M)"
+    MSG="$(date +'%m-%d %H:%M:%S') [v$SVER] EV=$EV defer=${DF:-?} rtc=${RT:-?} wifi=${CM:-?} slot=$(date +%H:%M)"
     curl -sL -k -m 5 -X POST -H "Title: sched-debug" --data-binary "$MSG" "https://ntfy.sh/$DBG_TOPIC" >/dev/null 2>&1
 }
 
@@ -101,6 +104,7 @@ startup_refresh_if_stale() {
 # ---- 阶段1：用户态常驻 + deferSuspend 轻休眠（不深睡，续航约 1–2 天）----
 phase1_loop() {
     log "===== 阶段1 轻休眠模式（deferSuspend，SS_RTC=$SS_RTC）====="
+    dbg "BOOT v$SVER phase1 rtc=$SS_RTC"
     startup_refresh_if_stale
     while true; do
         if test_mode; then
@@ -204,6 +208,7 @@ trigger_update() {
 
 phase2_loop() {
     log "===== 阶段2 事件驱动（powerd 原生挂起 + readyToSuspend 每轮设 rtcWakeup, SS_RTC=$SS_RTC）====="
+    dbg "BOOT v$SVER phase2 rtc=$SS_RTC"
     # 清除旧版（方案B）可能残留的 preventScreenSaver=1：该 lipc 标志在进程被杀后仍持久，
     # 不复位则「按电源键进待机」继续被禁用。方案C 从不设置它，此处仅做一次性清理。
     lipc-set-prop com.lab126.powerd preventScreenSaver 0 2>/dev/null
