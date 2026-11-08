@@ -158,18 +158,36 @@ set_rtc_wakeup() {
 }
 
 # 后台触发取图刷屏，避免阻塞事件循环导致 readyToSuspend 来不及设闹钟（旧版会「下一次整点不醒」）。
-# 用 PID 文件锁（而非仅靠文件存在）防止：后台进程被杀死/冻结后残留死锁，导致之后所有更新被跳过。
+# 锁文件含两样：PID（/tmp/ss_updating）+ 启动时间戳（/tmp/ss_updating.ts）。
+# 关键鲁棒性（2026-11-08 补强）：Kindle 在 RTC 唤醒后若很快重新挂起，后台 do_update 会被
+# 「冻结」在 suspended 态（WiFi 仍开着、PID 仍存活，kill -0 为真）。普通 PID 锁会误判「仍在跑」
+# 从而跳过本回合乃至之后所有整点的更新。故额外用时间戳判定：进程存活但已运行超过
+# SS_UPD_MAXS 秒（远超正常 40–60s 的取图耗时，典型是跨整点被挂起冻结了数千秒），视为僵死，
+# 直接 kill -9 后重来。这样无论固件是「唤醒后长驻数十秒」还是「唤醒后秒级挂起」，每小时都可靠更新：
+#   前者：do_update 在挂起前跑完并删锁，下个整点正常触发；
+#   后者：冻结进程在下一整点被时间戳判定为僵死清掉，新更新照常进行。
+SS_UPD_MAXS="${SS_UPD_MAXS:-150}"
 trigger_update() {
     if [ -f /tmp/ss_updating ]; then
         OPID=$(cat /tmp/ss_updating 2>/dev/null)
+        TS=$(cat /tmp/ss_updating.ts 2>/dev/null)
+        NOW=$(date +%s)
         if [ -n "$OPID" ] && kill -0 "$OPID" 2>/dev/null; then
-            log "trigger_update：已有更新在跑(pid=$OPID)，跳过"
-            return 0
+            if [ -n "$TS" ] && [ $(( NOW - TS )) -gt "$SS_UPD_MAXS" ]; then
+                log "trigger_update：更新进程(pid=$OPID)已运行 $(( NOW - TS ))s，疑似被挂起冻结，kill -9 后重来"
+                kill -9 "$OPID" 2>/dev/null
+                rm -f /tmp/ss_updating /tmp/ss_updating.ts
+            else
+                log "trigger_update：已有更新在跑(pid=$OPID)，跳过"
+                return 0
+            fi
+        else
+            rm -f /tmp/ss_updating /tmp/ss_updating.ts
         fi
-        rm -f /tmp/ss_updating
     fi
-    ( SS_FORCE_EIPS=1 SS_SNAP=1 do_update; rm -f /tmp/ss_updating ) &
+    ( SS_FORCE_EIPS=1 SS_SNAP=1 do_update; rm -f /tmp/ss_updating /tmp/ss_updating.ts ) &
     echo $! > /tmp/ss_updating
+    echo "$(date +%s)" > /tmp/ss_updating.ts
 }
 
 phase2_loop() {
@@ -188,16 +206,17 @@ phase2_loop() {
             | while read EV; do
             case "$EV" in
                 goingToScreenSaver*)
-                    # 进待机前刷一次；距上次更新 <120s（典型为刚 wakeupFromSuspend 紧随的
-                    # 重新进待机）则跳过取图，避免重复开 WiFi 取同一张图。
-                    LAST=$(cat "$SS_LAST" 2>/dev/null)
-                    NOW=$(date +%s)
-                    if [ -n "$LAST" ] && [ $(( NOW - LAST )) -lt 120 ]; then
-                        log "事件 goingToScreenSaver：距上次更新 <120s，跳过取图"
-                    else
-                        log "事件 goingToScreenSaver：进待机前刷一次"
-                        trigger_update
-                    fi
+                    # 进待机事件：不在此触发取图（2026-11-08 复盘修复）。
+                    # 旧逻辑在此跑 do_update，但「按电源键进待机」时 powerd 随即挂起，
+                    # 后台取图会被冻结在 suspended 态（WiFi 还开着），直到下一个 RTC 唤醒
+                    # 才恢复；而恢复时 wakeupFromSuspend 因 /tmp/ss_updating 锁未释放而
+                    # 跳过本回合更新 -> 「手动休眠一次后，后续整点不更新」的真实 bug。
+                    # 实际无需在此取图：ss_update_once.sh 每次成功更新都已把最新图写进
+                    # linkss/screensavers/bg_ss00.png，powerd 在 suspend 那一刻由 linkss
+                    # 重读该文件显示，即用户按电源休眠看到的就是最近一次自动更新的画面
+                    # （最多落后一个槽位，待机画面可接受）。真正的定时更新由
+                    # wakeupFromSuspend 负责，本分支保持空操作即可。
+                    log "事件 goingToScreenSaver：挂起即由 linkss 显示当前 bg_ss00.png，无需取图"
                     ;;
                 wakeupFromSuspend*)
                     # RTC 到点 / 手动唤醒：等电源键抖动平息，刷一次最新图。
