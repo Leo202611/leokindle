@@ -15,7 +15,18 @@
 # 正在运行的本脚本仍持有旧 inode，不会被截断写坏。
 export PATH=/usr/sbin:/usr/bin:/bin:/sbin:$PATH
 LOG=/mnt/us/dash/update.log
-SRV="${DASH_SRV:-192.168.110.46:8899}"
+# 服务器地址解析：同 deploy_v5.sh，Mac DHCP 换 IP 时静默探测候选清单，避免回退 GitHub 旧缓存。
+SRV="${DASH_SRV:-}"
+if [ -z "$SRV" ]; then
+    LAST_SRV=$(cat /mnt/us/dash/last_srv 2>/dev/null)
+    for c in $LAST_SRV 192.168.110.57 192.168.110.46; do
+        [ -z "$c" ] && continue
+        if curl -sL -m 4 -o /dev/null "http://$c:8899/deploy_v5.sh" 2>/dev/null; then
+            SRV="$c:8899"; echo "$c" > /mnt/us/dash/last_srv 2>/dev/null; break
+        fi
+    done
+    [ -z "$SRV" ] && SRV="${LAST_SRV:-192.168.110.57}:8899"
+fi
 GH_API="https://api.github.com/repos/Leo202611/leokindle/contents"
 TMP=/tmp/dash_deploy_wifi.sh
 ENTRY=/mnt/us/extensions/dash/bin/dash_on_v5.sh

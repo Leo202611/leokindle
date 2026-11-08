@@ -54,7 +54,20 @@
 # 电脑端服务：wifi_srv/ 目录 + python3 -m http.server 8899
 export PATH=/usr/sbin:/usr/bin:/bin:/sbin:$PATH
 
-SRV="${DASH_SRV:-192.168.110.46:8899}"
+# 服务器地址解析：Mac 在家用 WiFi 上 DHCP 可能换 IP，单一硬编码 IP 一旦失效就会静默
+# 回退 GitHub 且常被 CDN 缓存旧版，导致「改了半天没部署上去」。改为候选清单探测：
+# 先试上次成功的 IP（last_srv），再试当前已知 IP，第一个可达即用，并把成功 IP 记回。
+SRV="${DASH_SRV:-}"
+if [ -z "$SRV" ]; then
+    LAST_SRV=$(cat /mnt/us/dash/last_srv 2>/dev/null)
+    for c in $LAST_SRV 192.168.110.57 192.168.110.46; do
+        [ -z "$c" ] && continue
+        if curl -sL -m 3 -o /dev/null "http://$c:8899/deploy_v5.sh" 2>/dev/null; then
+            SRV="$c:8899"; echo "$c" > /mnt/us/dash/last_srv 2>/dev/null; break
+        fi
+    done
+    [ -z "$SRV" ] && SRV="${LAST_SRV:-192.168.110.57}:8899"
+fi
 GH_API="https://api.github.com/repos/Leo202611/leokindle/contents"
 LOG=/mnt/us/dash/deploy_v5.log
 DST=/mnt/us/dash
