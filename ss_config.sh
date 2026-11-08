@@ -47,6 +47,13 @@ SS_LAST="/mnt/us/dash/ss_last"
 SS_DONE="/mnt/us/dash/ss_done"
 SS_FLAG="/mnt/us/dash/ss_enabled"
 
+# 屏保实拍截图中继（2026-11-08 新增，定位为「测试期辅助工具」）：
+# 调度器自动更新刷屏后抓 /dev/fb0 原始帧缓冲上传 ntfy，Mac 端免拍照即可核验屏保内容。
+# 程序运行成熟稳定后无需再用，故【默认关闭 SS_SNAP_ENABLE=0】。
+# 想重新核验时，在 /mnt/us/dash/ss_config.local 写 SS_SNAP_ENABLE=1 即可，不必改本文件。
+# 注：ss_update_once.sh 的 guard `[ -n ... ] || SS_SNAP_ENABLE=1` 会因 0 非空而保留本默认值。
+SS_SNAP_ENABLE=0
+
 # 省电硬约束：单次唤醒总预算，超时即放弃，不重试，等下一个更新点。
 SS_CURL_T=20
 SS_WIFI_WAIT=20

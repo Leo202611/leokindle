@@ -147,15 +147,29 @@ secs_to_next_slot() {
 }
 
 set_rtc_wakeup() {
-    # 只在 readyToSuspend / wakeupFromSuspend 等 powerd 接受 rtcWakeup 的状态调用。
+    # 只在 readyToSuspend 等 powerd 接受 rtcWakeup 的状态调用（此固件 rtcWakeup 仅在该态有效）。
     # 相对秒数；每轮 readyToSuspend 都设，吃满 powerd 重复事件，避免被 rtcWakeup=0 覆盖。
     SECS=$(secs_to_next_slot)
-    log "设下次 RTC 唤醒：约 ${SECS}s 后"
     if lipc-set-prop -i com.lab126.powerd rtcWakeup "$SECS" 2>/dev/null; then
-        log "rtcWakeup 已设 ${SECS}s"
+        log "rtcWakeup 已设 ${SECS}s（下次槽位）"
     else
         log "rtcWakeup 设置失败（本轮回退，等下次 readyToSuspend 再设）"
     fi
+}
+
+# 后台触发取图刷屏，避免阻塞事件循环导致 readyToSuspend 来不及设闹钟（旧版会「下一次整点不醒」）。
+# 用 PID 文件锁（而非仅靠文件存在）防止：后台进程被杀死/冻结后残留死锁，导致之后所有更新被跳过。
+trigger_update() {
+    if [ -f /tmp/ss_updating ]; then
+        OPID=$(cat /tmp/ss_updating 2>/dev/null)
+        if [ -n "$OPID" ] && kill -0 "$OPID" 2>/dev/null; then
+            log "trigger_update：已有更新在跑(pid=$OPID)，跳过"
+            return 0
+        fi
+        rm -f /tmp/ss_updating
+    fi
+    ( SS_FORCE_EIPS=1 SS_SNAP=1 do_update; rm -f /tmp/ss_updating ) &
+    echo $! > /tmp/ss_updating
 }
 
 phase2_loop() {
@@ -163,33 +177,40 @@ phase2_loop() {
     # 清除旧版（方案B）可能残留的 preventScreenSaver=1：该 lipc 标志在进程被杀后仍持久，
     # 不复位则「按电源键进待机」继续被禁用。方案C 从不设置它，此处仅做一次性清理。
     lipc-set-prop com.lab126.powerd preventScreenSaver 0 2>/dev/null
+    rm -f /tmp/ss_updating
     startup_refresh_if_stale
     while true; do
         # -m 进入 monitor 模式持续吐事件，管道逐行交给 case 处理。
+        # 关键修复：取图刷屏（trigger_update）一律后台跑，事件循环本身不被阻塞，
+        # 这样 readyToSuspend 一到就能立刻设好下次 RTC 闹钟，杜绝「下一次整点不醒」。
         lipc-wait-event -m com.lab126.powerd \
             goingToScreenSaver,wakeupFromSuspend,readyToSuspend,exitingScreenSaver \
             | while read EV; do
             case "$EV" in
                 goingToScreenSaver*)
                     # 进待机前刷一次；距上次更新 <120s（典型为刚 wakeupFromSuspend 紧随的
-                    # 重新进待机）则跳过，避免重复开 WiFi 取同一张图。
+                    # 重新进待机）则跳过取图，避免重复开 WiFi 取同一张图。
                     LAST=$(cat "$SS_LAST" 2>/dev/null)
                     NOW=$(date +%s)
                     if [ -n "$LAST" ] && [ $(( NOW - LAST )) -lt 120 ]; then
-                        log "事件 goingToScreenSaver：距上次更新 <120s，跳过"
+                        log "事件 goingToScreenSaver：距上次更新 <120s，跳过取图"
                     else
                         log "事件 goingToScreenSaver：进待机前刷一次"
-                        SS_FORCE_EIPS=1 SS_SNAP=1 do_update
+                        trigger_update
                     fi
                     ;;
                 wakeupFromSuspend*)
                     # RTC 到点 / 手动唤醒：等电源键抖动平息，刷一次最新图。
+                    # 同时尽力早设闹钟（部分固件 wakeupFromSuspend 态也接受 rtcWakeup，
+                    # 失败静默，交给紧随的 readyToSuspend 兜底——循环已不被阻塞故能及时设）。
                     log "事件 wakeupFromSuspend：唤醒后刷一次"
                     sleep 2
-                    SS_FORCE_EIPS=1 SS_SNAP=1 do_update
+                    SECS=$(secs_to_next_slot)
+                    lipc-set-prop -i com.lab126.powerd rtcWakeup "$SECS" >/dev/null 2>&1
+                    trigger_update
                     ;;
                 readyToSuspend*)
-                    # 即将挂起：每轮必设下次 RTC 唤醒（不设防抖）。WiFi 已由 do_update 关掉。
+                    # 即将挂起：每轮必设下次 RTC 唤醒（不设防抖）。WiFi 由 do_update 自管。
                     set_rtc_wakeup
                     ;;
                 exitingScreenSaver*)
