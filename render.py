@@ -1402,10 +1402,11 @@ if __name__ == "__main__":
                 render_landscape(data, lf, at)
                 names.append(os.path.basename(lf))
 
-        # 待机画面「分钟槽位」图：每个 (小时, 槽位分钟) 一张，脚注显示真实分钟
-        # （如 20:40），而非整点 :00。这样屏保「更新时间」能反映设备真实唤醒时刻。
+        # 待机画面「分钟槽位」图：每个 (小时, 槽位分钟) 一张，脚注显示该槽位时刻。
+        # 当前 SS_SLOT_MINUTES="0" → 每个整点一张，脚注为 HH:00；
+        # 若改成 "0 20 40" 则每小时三张，脚注为 HH:00 / HH:20 / HH:40。
         # 必须与设备端 ss_config.sh 的 SS_SLOT_MINUTES 保持一致（CI 通过 env 传入）。
-        slot_env = os.environ.get("SS_SLOT_MINUTES", "0 20 40")
+        slot_env = os.environ.get("SS_SLOT_MINUTES", "0")
         try:
             SLOT_MINS = [int(x) for x in slot_env.replace(",", " ").split() if x.strip()]
         except ValueError:

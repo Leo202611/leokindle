@@ -20,7 +20,7 @@
 #      → lipc-get-prop com.lab126.wifid cmState = CONNECTED
 #        （本项目无常开服务器；用设备原生属性判断 WiFi 就绪，语义等价、零网络 I/O）
 #   M5 原 L18-19 DASH_INTERVAL=1800 / DASH_WAKE_INTERVAL=3600
-#      → 1200 / 1200（用户 11/9 定案「每 20 分钟」）。仍可由 $CONF 覆盖。
+#      → 3600 / 3600（用户 11/10 定案「每 1 小时」）。仍可由 $CONF 覆盖。
 #      【2026-11-10 修正】WAKE 不再作为 rtcWakeup 的秒数，仅作闹钟开关；
 #      秒数改由 wait_seconds_to_next_slot() 按绝对槽位算（见下方 M6 说明）。
 #
@@ -40,7 +40,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH
 export PATH
 
 # 版本号：仅用于 deploy_v5.sh 自证遥测确认设备上跑的是哪一版（分发链路，非调度机制）
-SVER="20261110.1"
+SVER="20261110.2"
 
 CONF=/mnt/us/dash/ss_dash.conf          # M3/M5：可选，改频率不必改脚本
 POLL=60
@@ -56,16 +56,16 @@ log() { echo "$(date '+%F %T') $*" >> "$LOG" 2> /dev/null; }
 
 # ---- 原 L37-54 ----
 load_conf() {
-    INTERVAL=1200      # M5：原 1800（30 分钟）→ 20 分钟
-    WAKE=1200          # M5：原 3600（1 小时）→ 20 分钟
+    INTERVAL=3600      # M5：原 1800（30 分钟）→ 60 分钟（每 1 小时）
+    WAKE=3600          # 仅作闹钟开关（>0 启用）；秒数由 wait_seconds_to_next_slot() 按绝对槽位算
     WIFI_MODE=auto
     if [ -r "$CONF" ]; then
         eval "$(tr -d '\r' < "$CONF")"
-        INTERVAL="${DASH_INTERVAL:-1200}"
+        INTERVAL="${DASH_INTERVAL:-3600}"
         WAKE="${DASH_WAKE_INTERVAL:-1200}"
         WIFI_MODE="${DASH_WIFI:-auto}"
     fi
-    case "$INTERVAL" in '' | *[!0-9]*) INTERVAL=1200 ;; esac
+    case "$INTERVAL" in '' | *[!0-9]*) INTERVAL=3600 ;; esac
     case "$WAKE" in '' | *[!0-9]*) WAKE=0 ;; esac
     [ "$INTERVAL" -lt 300 ] && INTERVAL=300
     [ "$WAKE" -gt 0 ] && [ "$WAKE" -lt 120 ] && WAKE=120
@@ -264,7 +264,7 @@ trap 'kill "$WATCHER" 2> /dev/null' EXIT INT TERM
 #   watch_events 后台 / 三段 WiFi 重试 / handle_event / STAMP 写入 全部保持原文不动。
 #   注意：STAMP 仍按 fanzhh 原样写 epoch 秒（事件回调 L164 也写它），
 #   故主循环判据改用独立的内存变量 last_slot，不把 STAMP 当槽位基准。
-#   【配置约束】INTERVAL 必须与 CI 的 SS_SLOT_MINUTES 对齐：当前 1200s ↔ "0 20 40"。
+#   【配置约束】INTERVAL 必须与 CI 的 SS_SLOT_MINUTES 对齐：当前 3600s ↔ "0"。
 #   若改 INTERVAL，槽位边界会随之改变，须同步改 CI 与设备端 SS_SLOT_MINUTES，
 #   否则「判据槽位」与「云端预渲染的槽位图」会错位。
 last_slot=-1

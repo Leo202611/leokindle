@@ -4,7 +4,7 @@
 背景
 ----
 CI 每小时用 --hours 26 生成逐小时图；render.py 在批量模式下额外为每个
-(小时, 槽位分钟) 渲染一张 ss_HH_MM.png，脚注显示真实分钟（如 20:40）。
+(小时, 槽位分钟) 渲染一张 ss_HH_MM.png，脚注显示该槽位时刻（当前为整点，如 20:00）。
 本脚本把 out/ 里的 ss_HH_MM.png 规范化成 linkss 要求的 600x800 / 8 位灰度 PNG，
 并补两张兼容/兜底图：
   * ss_HH.png      = 该小时 :00 槽位图（设备端 SS_SLOT_MINUTES 与 CI 不一致时的兜底）
@@ -48,7 +48,7 @@ def main() -> None:
 
     lines = [
         "# 待机画面固定槽位图（每次 CI 运行重新生成）",
-        "# 命名 ss_HH_MM.png = 该小时 HH 的 MM 分钟槽位，脚注显示真实分钟（如 20:40）",
+        "# 命名 ss_HH_MM.png = 该小时 HH 的 MM 分钟槽位，脚注显示该槽位时刻（如 20:00）",
         "# 与 render.py 的 SS_SLOT_MINUTES、设备端 ss_config.sh 的 SS_SLOT_MINUTES 保持一致",
     ]
 

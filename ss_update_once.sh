@@ -11,18 +11,18 @@
 #   * 电量上报复用本次已打开的 WiFi，零额外唤醒、单次请求不重试、失败不阻断显示。
 #
 # 图源命名：ss_HH_MM.png 是 CI 按「小时_槽位分钟」预渲染的固定槽位图（脚注显示真实分钟，
-# 如 ss_20_40.png 的「更新时间」为 20:40），不会像逐小时图那样被 orphan 分支滚动清理掉；
+# 如 ss_20_00.png 的「更新时间」为 20:00），不会像逐小时图那样被 orphan 分支滚动清理掉；
 # 同小时整点兜底图 ss_HH.png（脚注 :00）；非更新点用 ss_latest.png。
 export PATH=/usr/sbin:/usr/bin:/bin:/sbin:$PATH
 
 # 脚本版本号：每次实质改动都 +1，便于从 ntfy 遥测确认设备上跑的是哪一版（避免再出现
 # 「改了半天其实没部署上去」的盲区）。格式 YYYYMMDD.N。
-SVER="20261109.6"
+SVER="20261110.2"
 
 CONF=/mnt/us/dash/ss_config.sh
 [ -f "$CONF" ] && . "$CONF"
 [ -n "${SS_HOURS:-}" ]       || SS_HOURS="6 9 12 15 18"
-[ -n "${SS_SLOT_MINUTES:-}" ] || SS_SLOT_MINUTES="0 20 40"
+[ -n "${SS_SLOT_MINUTES:-}" ] || SS_SLOT_MINUTES="0"
 [ -n "${SS_LOCAL_SRV:-}" ]   || SS_LOCAL_SRV=""
 [ -n "${SS_GH_API:-}" ]      || SS_GH_API="https://api.github.com/repos/Leo202611/leokindle/contents"
 [ -n "${SS_GH_BRANCH:-}" ]   || SS_GH_BRANCH="dash"

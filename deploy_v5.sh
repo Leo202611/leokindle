@@ -81,7 +81,7 @@ say() {
 # 部署自证遥测（2026-11-08）：把「设备到底拉到了哪一版」上报 ntfy，彻底消除
 # 「改了半天其实没部署上去 / GitHub CDN 缓存旧版」的盲区。复用电量上报同款 ntfy POST
 # 通道（已验证可达），最好努力、失败静默。
-DEPLOY_VER="20261110.1"
+DEPLOY_VER="20261110.2"
 DEPLOY_TOPIC="k8dash_deploy_4f2a"
 dep_report() {
     curl -sL -k -m 5 -X POST -H "Title: deploy" --data-binary "$1" "https://ntfy.sh/$DEPLOY_TOPIC" >/dev/null 2>&1
@@ -177,7 +177,7 @@ pull_sh() {
 for f in $SH_FILES; do pull_sh "$f"; done
 
 # 部署自证：上报 SRV_OK 与关键脚本是否含新版 SVER（设备到底拉到没有，一目了然）
-dep_report "deploy v$DEPLOY_VER SRV_OK=$SRV_OK updSVER=$(grep -c 'SVER=\"20261109.6\"' "$DST/ss_update_once.sh" 2>/dev/null) schedSVER=$(grep -c 'SVER=\"20261110.1\"' "$DST/ss_scheduler.sh" 2>/dev/null) wifiToggle=$(grep -c 'wirelessEnable 0' "$DST/ss_config.sh" 2>/dev/null)"
+dep_report "deploy v$DEPLOY_VER SRV_OK=$SRV_OK updSVER=$(grep -c 'SVER=\"20261110.2\"' "$DST/ss_update_once.sh" 2>/dev/null) schedSVER=$(grep -c 'SVER=\"20261110.2\"' "$DST/ss_scheduler.sh" 2>/dev/null) wifiToggle=$(grep -c 'wirelessEnable 0' "$DST/ss_config.sh" 2>/dev/null)"
 
 # ---- 1.5 【关键动作前置 · 2026-11-09 01:4x】----
 # 01:39 那次在线更新卡在后面第 2 步的 GitHub HTTPS 拉图（curl -m 40），
@@ -190,7 +190,7 @@ case "$1" in start|land|port) DEP_BOOT="$1" ;; *) DEP_BOOT="" ;; esac
 if [ -z "$DEP_BOOT" ] && [ -f "$DST/ss_enable.sh" ] && [ ! -f "$DST/ss_no_auto" ]; then
     sh "$DST/ss_enable.sh" quick >> "$LOG" 2>&1
     EARLY_ENABLED=1
-    dep_report "deploy DONE v$DEPLOY_VER EARLY schedSVER=$(grep -c 'SVER=\"20261110.1\"' "$DST/ss_scheduler.sh" 2>/dev/null) enabled=$([ -f "$DST/ss_enabled" ] && echo yes || echo no)"
+    dep_report "deploy DONE v$DEPLOY_VER EARLY schedSVER=$(grep -c 'SVER=\"20261110.2\"' "$DST/ss_scheduler.sh" 2>/dev/null) enabled=$([ -f "$DST/ss_enabled" ] && echo yes || echo no)"
 else
     EARLY_ENABLED=0
 fi
@@ -439,5 +439,5 @@ if [ "${EARLY_ENABLED:-0}" != "1" ] && [ -z "$BOOT" ] && [ -f "$EXT/bin/ss_enabl
 fi
 
 # TAIL ≠ DONE：DONE 在 1.5 前置启用后立即发出；TAIL 表示脚本一路跑到了末尾。
-dep_report "deploy TAIL v$DEPLOY_VER updSVER=$(grep -c 'SVER=\"20261109.6\"' "$DST/ss_update_once.sh" 2>/dev/null) schedSVER=$(grep -c 'SVER=\"20261110.1\"' "$DST/ss_scheduler.sh" 2>/dev/null) early=${EARLY_ENABLED:-0}"
+dep_report "deploy TAIL v$DEPLOY_VER updSVER=$(grep -c 'SVER=\"20261110.2\"' "$DST/ss_update_once.sh" 2>/dev/null) schedSVER=$(grep -c 'SVER=\"20261110.2\"' "$DST/ss_scheduler.sh" 2>/dev/null) early=${EARLY_ENABLED:-0}"
 say "===== 安装完成（全程 WiFi，未使用 USB）====="
