@@ -19,13 +19,13 @@ LOG=/mnt/us/dash/update.log
 SRV="${DASH_SRV:-}"
 if [ -z "$SRV" ]; then
     LAST_SRV=$(cat /mnt/us/dash/last_srv 2>/dev/null)
-    for c in $LAST_SRV 192.168.110.57 192.168.110.46; do
+    for c in $LAST_SRV 192.168.110.35 192.168.110.57 192.168.110.46; do
         [ -z "$c" ] && continue
         if curl -sL -m 4 -o /dev/null "http://$c:8899/deploy_v5.sh" 2>/dev/null; then
             SRV="$c:8899"; echo "$c" > /mnt/us/dash/last_srv 2>/dev/null; break
         fi
     done
-    [ -z "$SRV" ] && SRV="${LAST_SRV:-192.168.110.57}:8899"
+    [ -z "$SRV" ] && SRV="${LAST_SRV:-192.168.110.35}:8899"
 fi
 GH_API="https://api.github.com/repos/Leo202611/leokindle/contents"
 TMP=/tmp/dash_deploy_wifi.sh

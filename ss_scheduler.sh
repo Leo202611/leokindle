@@ -21,6 +21,8 @@
 #        （本项目无常开服务器；用设备原生属性判断 WiFi 就绪，语义等价、零网络 I/O）
 #   M5 原 L18-19 DASH_INTERVAL=1800 / DASH_WAKE_INTERVAL=3600
 #      → 1200 / 1200（用户 11/9 定案「每 20 分钟」）。仍可由 $CONF 覆盖。
+#      【2026-11-10 修正】WAKE 不再作为 rtcWakeup 的秒数，仅作闹钟开关；
+#      秒数改由 wait_seconds_to_next_slot() 按绝对槽位算（见下方 M6 说明）。
 #
 # 【保留原版的关键结论，勿改】
 #   * 原 L9-11：直接写 /sys/class/rtc/rtc0/wakealarm 不会唤醒，
@@ -38,7 +40,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH
 export PATH
 
 # 版本号：仅用于 deploy_v5.sh 自证遥测确认设备上跑的是哪一版（分发链路，非调度机制）
-SVER="20261109.7"
+SVER="20261110.1"
 
 CONF=/mnt/us/dash/ss_dash.conf          # M3/M5：可选，改频率不必改脚本
 POLL=60
@@ -70,6 +72,34 @@ load_conf() {
 }
 
 load_conf
+
+# ---------------------------------------------------------------------------
+# 【M6 · 2026-11-10】距下一「绝对槽位」的秒数
+#   来源：Basti189 bin/scheduler.sh L110-113
+#           NEXT_UPDATE_SECONDS = NEXT_UPDATE_MIN * 60
+#           WAIT_SECONDS = NEXT_UPDATE_SECONDS - CURRENT_DAY_SECONDS
+#         zpetterd kindle/bin/utils.sh L115-127 + scheduler.sh L161-165
+#           set_rtc_wakeup "${REMAINING}"，REMAINING = ENDTIME - currentTime
+#   lipc rtcWakeup 只收相对秒，但秒数必须由绝对槽位算出：
+#     WAIT = (当前槽位编号 + 1) * INTERVAL - 当天已过秒数
+#   【为何改】原 fanzhh L106-111 传固定 WAKE（本项目 M5 映射成 1200）：
+#     每轮更新完成后才设 1200s，更新耗时约 75s 被逐轮累加 -> 实测周期 1275s，
+#     触发点一路后移、:00/:20/:40 槽位被跳过（11-10 12:04/12:26/12:47/13:12 实证）。
+#     每轮 readyToSuspend 用挂钟重算，晚几秒下一轮自动归位，漂移不累积。
+#   与前台主循环 L246-247 用同一 DAYSEC/INTERVAL 公式，两路判据天然一致。
+#   变量加 _WS_ 前缀，避免 ash 全局变量污染主循环（历史教训）。
+# ---------------------------------------------------------------------------
+wait_seconds_to_next_slot() {
+    _WS_HM=$(date +'%H %M %S' 2>/dev/null)
+    _WS_H=${_WS_HM%% *}; _WS_REST=${_WS_HM#* }
+    _WS_M=${_WS_REST%% *}; _WS_S=${_WS_REST#* }
+    _WS_H=${_WS_H#0}; [ -z "$_WS_H" ] && _WS_H=0
+    _WS_M=${_WS_M#0}; [ -z "$_WS_M" ] && _WS_M=0
+    _WS_S=${_WS_S#0}; [ -z "$_WS_S" ] && _WS_S=0
+    _WS_DAYSEC=$(( _WS_H * 3600 + _WS_M * 60 + _WS_S ))
+    _WS_SLOT=$(( _WS_DAYSEC / INTERVAL ))
+    echo $(( (_WS_SLOT + 1) * INTERVAL - _WS_DAYSEC ))
+}
 
 # ---------------------------------------------------------------------------
 # 网络诊断 —— 原 L58-83
@@ -114,10 +144,13 @@ handle_event() {
     case "$line" in
         readyToSuspend*)
             if [ "$WAKE" -gt 0 ]; then
+                # WAKE 仅作开关（DASH_WAKE_INTERVAL=0 可关闹钟）；真正的秒数
+                # 由绝对槽位算出，见 wait_seconds_to_next_slot（Basti189 L110-113）。
+                RTC_WAIT=$(wait_seconds_to_next_slot)
                 i=0
                 while [ "$i" -lt 4 ]; do
-                    if lipc-set-prop -i "$POWERD" rtcWakeup "$WAKE" > /dev/null 2>&1; then
-                        log "readyToSuspend：已设置 rtcWakeup=${WAKE}s"
+                    if lipc-set-prop -i "$POWERD" rtcWakeup "$RTC_WAIT" > /dev/null 2>&1; then
+                        log "readyToSuspend：已设置 rtcWakeup=${RTC_WAIT}s（下一绝对槽位）"
                         break
                     fi
                     i=$((i + 1))
@@ -213,7 +246,7 @@ else
     WATCH_OK="否"
 fi
 
-log "守护启动 v$SVER：刷新间隔 ${INTERVAL}s，唤醒间隔 ${WAKE}s，无线策略=${WIFI_MODE}，事件监听=${WATCH_OK}"
+log "守护启动 v$SVER：刷新间隔 ${INTERVAL}s，闹钟开关=${WAKE}（秒数按绝对槽位重算），无线策略=${WIFI_MODE}，事件监听=${WATCH_OK}"
 
 watch_events &
 WATCHER=$!
