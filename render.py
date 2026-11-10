@@ -1417,7 +1417,13 @@ if __name__ == "__main__":
         for h in range(24):
             for m in SLOT_MINS:
                 sat = base.replace(hour=h, minute=m, second=0, microsecond=0)
-                if sat < base or sat >= WIN_END:
+                # 【2026-11-10 修跨天】replace(hour=...) 只改小时、不改日期：
+                # 当该槽位在今天已经过去时（如 23:02 渲染时的 00:00），
+                # 正确的语义是「次日该槽位」，而不是丢弃。
+                # 否则次日 00:00 的 ss_00_00.png 永远生成不出来，设备跨天取图 404。
+                if sat < base:
+                    sat += datetime.timedelta(days=1)
+                if sat >= WIN_END:
                     continue
                 sfn = os.path.join(args.outdir, "ss_%02d_%02d.png" % (h, m))
                 render(data, sfn, sat)
