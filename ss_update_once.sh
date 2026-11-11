@@ -17,7 +17,7 @@ export PATH=/usr/sbin:/usr/bin:/bin:/sbin:$PATH
 
 # 脚本版本号：每次实质改动都 +1，便于从 ntfy 遥测确认设备上跑的是哪一版（避免再出现
 # 「改了半天其实没部署上去」的盲区）。格式 YYYYMMDD.N。
-SVER="20261110.2"
+SVER="20261111.1"
 
 CONF=/mnt/us/dash/ss_config.sh
 [ -f "$CONF" ] && . "$CONF"
