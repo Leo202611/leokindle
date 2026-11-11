@@ -41,8 +41,11 @@ CK=""
 [ -n "${SS_CURL_T:-}" ]      || SS_CURL_T=20
 [ -n "${SS_WIFI_WAIT:-}" ]   || SS_WIFI_WAIT=20
 [ -n "${SS_UPDATE_TIMEOUT:-}" ] || SS_UPDATE_TIMEOUT=60
-# 电量「搭车上报」开关与中转站（2026-11-07 恢复；设 SS_BATT_REPORT=0 可随时关掉）
-[ -n "${SS_BATT_REPORT:-}" ] || SS_BATT_REPORT=1
+# 电量显示已改为【设备端本地叠加电量小块】（见下方 4.5 节）：整点取图后读本地
+# battLevel，选 batt_${B}.png 用 eips 叠加到底栏，彻底不依赖 ntfy 上行。
+# 原「搭车上报」到 ntfy 的链路在 2026-11-11 实测中断（设备→ntfy POST 全部失败，
+# 而 GitHub 取图正常），故默认关闭；如日后恢复外网回传可设 SS_BATT_REPORT=1。
+[ -n "${SS_BATT_REPORT:-}" ] || SS_BATT_REPORT=0
 [ -n "${SS_BATT_TOPIC:-}" ]  || SS_BATT_TOPIC="k8dash_batt_7f3c9e2a"
 SS_BATT_URL="https://ntfy.sh/$SS_BATT_TOPIC"
 
@@ -357,12 +360,32 @@ else
     dbg "FAIL"
 fi
 
-# ---- 4.5 电量搭车上报（WiFi 此刻仍开着，零额外唤醒）----
-# 只在确实联网、且未超出本次 60s 预算时才发；失败不重试、不影响已刷好的画面。
-if [ "$ST" = "CONNECTED" ] && [ "$(date +%s)" -lt "$DEADLINE" ]; then
-    report_batt
+# ---- 4.5 本地电量小块叠加（2026-11-11 起：不再依赖 ntfy 上行）----
+# 设备本地读 battLevel（与 report_batt 同三路兜底），选 CI 预渲染的电量小块
+#（batt_0..100.png，全宽底栏条，走与取图相同的 CDN），用 eips -y 728 叠加。
+# 全宽条故 x 无关紧要；零额外唤醒、不依赖任何外网回传；耗电与旧方案持平（省掉了 ntfy POST）。
+BATT_TILE_Y0=728
+if [ "$ST" = "CONNECTED" ]; then
+    B=$(lipc-get-prop com.lab126.powerd battLevel 2>/dev/null)
+    case "$B" in ''|*[!0-9]*) B=$(cat /sys/class/power_supply/bd7181x_bat/capacity 2>/dev/null) ;; esac
+    case "$B" in ''|*[!0-9]*) B=$(/usr/bin/powerd_test -s 2>/dev/null | awk -F: '/Battery Level/ {gsub(/[^0-9]/,"",$2); print $2; exit}') ;; esac
+    case "$B" in ''|*[!0-9]*) B="" ;; esac
+    if [ -n "$B" ]; then
+        TILE_URL="$SS_CDN/batt_$B.png?cb=$CB"
+        # 小块是 600x(790-728)=600x62 的全宽底栏条，故只校验 PNG 魔数、不卡尺寸
+        if curl -sL $CK -m 6 -o "$TMP" "$TILE_URL" 2>/dev/null \
+           && [ -s "$TMP" ] \
+           && [ "$(head -c 8 "$TMP" 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "89504e470d0a1a0a" ]; then
+            eips -g "$TMP" -y "$BATT_TILE_Y0" >> "$SS_LOG" 2>&1
+            log "本地电量叠加: batt_$B.png（底栏中央，eips -y $BATT_TILE_Y0）"
+        else
+            log "电量小块拉取失败，底栏留白（不影响主画面）"
+        fi
+    else
+        log "本地电量读取失败，底栏留白"
+    fi
 else
-    log "电量上报跳过（未联网或已近超时预算）"
+    log "未联网，跳过电量叠加"
 fi
 
 # ---- 5. 恢复 WiFi 原状态 ----
