@@ -17,7 +17,7 @@ export PATH=/usr/sbin:/usr/bin:/bin:/sbin:$PATH
 
 # 脚本版本号：每次实质改动都 +1，便于从 ntfy 遥测确认设备上跑的是哪一版（避免再出现
 # 「改了半天其实没部署上去」的盲区）。格式 YYYYMMDD.N。
-SVER="20261111.1"
+SVER="20261111.2"
 
 CONF=/mnt/us/dash/ss_config.sh
 [ -f "$CONF" ] && . "$CONF"
@@ -41,11 +41,11 @@ CK=""
 [ -n "${SS_CURL_T:-}" ]      || SS_CURL_T=20
 [ -n "${SS_WIFI_WAIT:-}" ]   || SS_WIFI_WAIT=20
 [ -n "${SS_UPDATE_TIMEOUT:-}" ] || SS_UPDATE_TIMEOUT=60
-# 电量显示已改为【设备端本地叠加电量小块】（见下方 4.5 节）：整点取图后读本地
-# battLevel，选 batt_${B}.png 用 eips 叠加到底栏，彻底不依赖 ntfy 上行。
-# 原「搭车上报」到 ntfy 的链路在 2026-11-11 实测中断（设备→ntfy POST 全部失败，
-# 而 GitHub 取图正常），故默认关闭；如日后恢复外网回传可设 SS_BATT_REPORT=1。
-[ -n "${SS_BATT_REPORT:-}" ] || SS_BATT_REPORT=0
+# 电量显示：【CI 渲染时把设备上报电量烧进整图】方案（设备端 report_batt 见下方第 6 节）。
+# 设备整点取图时读本地 battLevel，搭车 POST 到 ntfy，CI 读回后渲染进 PNG 底栏中央；
+# 电量存在于屏保图文件内，挂起/唤醒始终保留。2026-11-11 曾试「设备端本地叠加电量小块」，
+# 但 eips 叠加只改实时帧缓冲、不写入屏保图，重新挂起即被覆盖，静置屏无法持久，故回退本方案。
+[ -n "${SS_BATT_REPORT:-}" ] || SS_BATT_REPORT=1
 [ -n "${SS_BATT_TOPIC:-}" ]  || SS_BATT_TOPIC="k8dash_batt_7f3c9e2a"
 SS_BATT_URL="https://ntfy.sh/$SS_BATT_TOPIC"
 
@@ -360,33 +360,11 @@ else
     dbg "FAIL"
 fi
 
-# ---- 4.5 本地电量小块叠加（2026-11-11 起：不再依赖 ntfy 上行）----
-# 设备本地读 battLevel（与 report_batt 同三路兜底），选 CI 预渲染的电量小块
-#（batt_0..100.png，全宽底栏条，走与取图相同的 CDN），用 eips -y 728 叠加。
-# 全宽条故 x 无关紧要；零额外唤醒、不依赖任何外网回传；耗电与旧方案持平（省掉了 ntfy POST）。
-BATT_TILE_Y0=728
-if [ "$ST" = "CONNECTED" ]; then
-    B=$(lipc-get-prop com.lab126.powerd battLevel 2>/dev/null)
-    case "$B" in ''|*[!0-9]*) B=$(cat /sys/class/power_supply/bd7181x_bat/capacity 2>/dev/null) ;; esac
-    case "$B" in ''|*[!0-9]*) B=$(/usr/bin/powerd_test -s 2>/dev/null | awk -F: '/Battery Level/ {gsub(/[^0-9]/,"",$2); print $2; exit}') ;; esac
-    case "$B" in ''|*[!0-9]*) B="" ;; esac
-    if [ -n "$B" ]; then
-        TILE_URL="$SS_CDN/batt_$B.png?cb=$CB"
-        # 小块是 600x(790-728)=600x62 的全宽底栏条，故只校验 PNG 魔数、不卡尺寸
-        if curl -sL $CK -m 6 -o "$TMP" "$TILE_URL" 2>/dev/null \
-           && [ -s "$TMP" ] \
-           && [ "$(head -c 8 "$TMP" 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "89504e470d0a1a0a" ]; then
-            eips -g "$TMP" -y "$BATT_TILE_Y0" >> "$SS_LOG" 2>&1
-            log "本地电量叠加: batt_$B.png（底栏中央，eips -y $BATT_TILE_Y0）"
-        else
-            log "电量小块拉取失败，底栏留白（不影响主画面）"
-        fi
-    else
-        log "本地电量读取失败，底栏留白"
-    fi
-else
-    log "未联网，跳过电量叠加"
-fi
+# ---- 4.5 电量上报（搭车回传，供 CI 烧进图）----
+# 复用本次已打开的 WiFi，POST 实测电量到 ntfy；CI（batt_relay.py）读回后把电量烧进
+# 下一轮 PNG 底栏中央，故电量存在于屏保图文件内、挂起后仍保留。
+# （2026-11-11.2 起：回退本地 eips 叠加方案——后者只改实时帧缓冲、不持久。）
+report_batt
 
 # ---- 5. 恢复 WiFi 原状态 ----
 if [ "$WIFI_WAS" = "0" ]; then

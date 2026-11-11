@@ -14,7 +14,8 @@ CI 步骤注释）；11-07 用户定案「搭车上报」方案后恢复：设�
       -> 把 DASH_BATT / DASH_CHARGING 写进 $GITHUB_ENV
       -> render.py --batt N [--charging] 烧进整套 PNG 的底栏中央
       -> 设备下一整点取图显示（约滞后 1h，电量慢变量下误差 <1%）
-    读不到/过期时 DASH_BATT 为空 -> 中央留白，绝不伪造数字。
+    读不到任何上报时 DASH_BATT 为空 -> 中央留白；若有历史上报则始终用最近一次已知值，
+    保证屏幕上不无故留白（电量慢变量，陈旧值误差极小）。
 
 为什么是 ntfy.sh：
   * 匿名可写可读，无 token / 无账号 / 无密钥，设备脚本里不必内置会过期的凭据；
@@ -49,8 +50,15 @@ def log(msg):
 
 
 def read_latest():
-    """返回 (batt:str, charging:int, age:int|None)。没有有效上报时 batt 为空串。"""
+    """返回 (batt:str, charging:int, age:int|None)。
+
+    优先采用 MAX_AGE 内的上报；若没有新鲜上报，则退回「最近一条已知上报」
+    （即使已超出 MAX_AGE），保证屏幕上始终显示最近一次已知电量，绝不无故留白。
+    ntfy 匿名 topic 默认缓存 12h，故离线超过 ~12h 才会真正无值。
+    """
     batt, charging, used_time = "", 0, None
+    # 最近一条有效上报（任何年龄），作为回退
+    last_batt, last_charging, last_time = "", 0, None
     try:
         req = urllib.request.Request(URL, headers={"User-Agent": "leokindle-dash-ci/1"})
         with urllib.request.urlopen(req, timeout=20) as resp:
@@ -75,9 +83,8 @@ def read_latest():
             t = int(ev.get("time") or 0)
         except (TypeError, ValueError):
             t = 0
-        # 超过 MAX_AGE 视为设备已离线，宁可显示「电量：--」也不显示陈旧数字。
-        # 时钟未来偏差超过 5 分钟同样丢弃，避免设备校时失败时污染。
-        if t and (now - t > MAX_AGE or now - t < -300):
+        # 时钟未来偏差超过 5 分钟丢弃，避免设备校时失败时污染。
+        if t and now - t < -300:
             continue
         try:
             payload = json.loads(ev.get("message") or "")
@@ -90,9 +97,16 @@ def read_latest():
         if isinstance(b, bool) or not isinstance(b, int) or not (0 <= b <= 100):
             continue
         c = payload.get("charging", 0)
-        charging = 1 if str(c) in ("1", "true", "True") else 0
-        batt = str(b)
-        used_time = t
+        is_c = 1 if str(c) in ("1", "true", "True") else 0
+        # 记录最近一条（任何年龄）作为回退
+        last_batt, last_charging, last_time = str(b), is_c, t
+        # 新鲜的（MAX_AGE 内）作为首选
+        if t and now - t <= MAX_AGE:
+            batt, charging, used_time = last_batt, is_c, (now - t)
+
+    # 没有新鲜上报 -> 退回最近一次已知值（保证屏幕上始终有电量，绝不无故留白）
+    if not batt and last_batt:
+        batt, charging, used_time = last_batt, last_charging, (now - last_time if last_time else None)
 
     return batt, charging, ((now - used_time) if used_time else None)
 
@@ -103,8 +117,8 @@ def main():
         log("电量中转命中: batt=%s charging=%s age=%ss topic=%s"
             % (batt, charging, age, TOPIC))
     else:
-        log("电量中转: %s 上无 %s 秒内的有效上报 -> 显示「电量：--」"
-            % (TOPIC, MAX_AGE))
+        log("电量中转: %s 上无 %s 秒内的新鲜上报，退回最近一次已知值 batt=%s"
+            % (TOPIC, MAX_AGE, batt))
     # 这两行是唯一写进 stdout 的内容，供 >> "$GITHUB_ENV" 使用。
     print("DASH_BATT=" + batt)
     print("DASH_CHARGING=" + str(charging))

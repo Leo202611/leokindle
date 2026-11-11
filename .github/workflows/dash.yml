@@ -40,11 +40,10 @@ jobs:
       - name: 安装依赖
         run: pip install -q -r requirements.txt
 
-      # 【2026-11-07 恢复】底栏中央显示 Kindle 电量（用户定案「搭车上报」方案）。
+      # 【2026-11-07 恢复 · 2026-11-11.2 回退本地叠加方案后沿用】底栏中央显示 Kindle 电量。
       # 设备端 ss_update_once.sh 在每小时整点取图时 WiFi 已开，顺手把 battLevel/isCharging
-      # POST 到 ntfy（零额外唤醒、不恢复 :35 跟进取图，续航基本不变）。
-      # 本步读回 2 小时内最新一条写进 GITHUB_ENV；读不到/过期/JSON 非法时 DASH_BATT 为空，
-      # render.py 便不绘制中央电量（留白），绝不伪造数字。诊断信息由 batt_relay.py 写 stderr。
+      # POST 到 ntfy（零额外唤醒），CI 读回后把电量烧进 PNG 底栏中央，故挂起后仍保留。
+      # batt_relay.py 优先取 2h 内上报；若无新鲜值则退回最近一次已知值（绝不无故留白）。
       # 数值约滞后 1 小时，但电量是慢变量(约 0.3%/小时)，整数显示下误差 <1%。
       - name: 读取设备上报的真实电量（云端中转）
         run: python3 batt_relay.py >> "$GITHUB_ENV"

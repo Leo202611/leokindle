@@ -59,12 +59,6 @@ EIPS_CELL_H = 38.5
 # 这样设备端叠加电量数字时 col/row 在两种模式下完全一致。
 BATT_BASE_Y = 762              # 底部状态栏基线（更新 / 电量 共用）
 
-# 电量小块：底栏整条（全宽 600px）裁出后在设备端叠加，避免依赖 ntfy 上行。
-# 裁 600 x (BATT_TILE_Y1-BATT_TILE_Y0) @ (0, BATT_TILE_Y0)，与
-# ss_update_once.sh 的 `eips -y BATT_TILE_Y0` 严格对应（全宽故 x 无关紧要）。
-BATT_TILE_Y0 = 728
-BATT_TILE_Y1 = 790
-
 
 def eips_col(x):
     """像素 x -> eips 列号"""
@@ -1064,11 +1058,19 @@ def batt_text():
 
 
 def center_batt_text():
-    """底栏中央电量文案已改为【设备端本地叠加电量小块】显示（2026-11-11 起）。
-    云端渲染不再把电量烧进整图，这里恒返回空串，避免与设备端小块双重显示。
-    电量值由设备整点取图时本地读 battLevel、选 batt_${B}.png 叠加到底栏，
-    彻底不依赖 ntfy 上行（设备→ntfy POST 在 2026-11-11 实测全部失败）。"""
-    return ""
+    """底栏中央电量文案。
+
+    由 CI 在渲染时把设备上报的真实电量（DASH_BATT / --batt，来自设备整点取图时
+    POST 到 ntfy 的 battLevel）直接烧进整套 PNG 的底栏中央。电量存在于屏保图文件本身，
+    因此挂起/唤醒后始终保留，不依赖实时叠加。
+    读不到/为空时返回空串 -> 不绘制（留白），绝不伪造数字。"""
+    v = (os.environ.get("DASH_BATT") or "").strip()
+    if not v.isdigit() or not (0 <= int(v) <= 100):
+        return ""
+    s = "电量 %d%%" % int(v)
+    if (os.environ.get("DASH_CHARGING") or "").strip() == "1":
+        s += " 充电中"
+    return s
 
 
 def draw_batt_center(d, cx, y, anchor="ms"):
@@ -1082,28 +1084,10 @@ def draw_batt_center(d, cx, y, anchor="ms"):
                fill=GRAY, anchor=anchor)
 
 
-def make_batt_tiles(outdir):
-    """预渲染 101 张电量小块 batt_0.png..batt_100.png（全宽底栏条，8-bit 灰度）。
-
-    设备端整点取图后本地读 battLevel，选对应块用 `eips -y BATT_TILE_Y0` 叠加到底栏，
-    彻底不依赖 ntfy 上行（设备→ntfy POST 在 2026-11-11 实测全部失败，而 GitHub 取图正常）。
-
-    小块裁自 ss_prev.png 的底栏同位置（与整图同背景，叠加零接缝），再绘「电量 N%」。
-    全宽 600px → 叠加时 x 位置无关紧要，只定纵向，规避老固件 eips -x 被忽略的坑。
-    """
-    prev = os.path.join(outdir, "ss_prev.png")
-    if not os.path.exists(prev):
-        return
-    base = Image.open(prev).convert("L")
-    strip = base.crop((0, BATT_TILE_Y0, W, BATT_TILE_Y1))
-    ty = BATT_BASE_Y - BATT_TILE_Y0   # 字基线在条内的纵坐标
-    for b in range(0, 101):
-        t = strip.copy()
-        td = ImageDraw.Draw(t)
-        td.text((W / 2, ty), "电量 %d%%" % b,
-                font=font(FONT_REG, FOOTER_FONT_SIZE), fill=GRAY, anchor="ms")
-        t.save(os.path.join(outdir, "batt_%d.png" % b), "PNG")
-    print("电量小块 101 张 -> %s" % os.path.abspath(outdir))
+# 注：2026-11-11 曾短暂用「设备端本地叠加电量小块」（预渲染 batt_0..100.png + eips 叠加），
+# 但 eips 叠加只作用于实时帧缓冲、不写入屏保图文件，重新挂起后 linkss 重绘无电量图即被覆盖，
+# 无法在静置屏上持久。故改回「CI 渲染时把电量烧进图」方案（见 center_batt_text），
+# 持久且无需设备端合成工具。
 
 
 # 底部状态栏统一字号：左侧「更新 时间」用 16px；
@@ -1467,19 +1451,13 @@ if __name__ == "__main__":
         render(data, os.path.join(args.outdir, "ss_prev.png"), slot_at)
         print("当前应显示槽位: %s -> ss_prev.png" % slot_at.strftime("%m-%d %H:00"))
 
-        # 预渲染 101 张电量小块（设备端本地读 battLevel 后按坐标叠加，不依赖 ntfy 上行）
-        make_batt_tiles(args.outdir)
-
         # 底部状态栏电量位元数据：只为 CI 流程与将来调试留档，设备端不读取。
         with open(os.path.join(args.outdir, "batt_pos.txt"), "w", encoding="utf-8") as f:
             f.write("# 底部状态栏电量位元数据（当前设备端不读取，仅留档）。\n")
-            f.write("# 2026-11-11 起：电量显示在底栏【中央】，由【设备端本地叠加电量小块】提供；\n")
-            f.write("#   CI 预渲染 101 张 batt_0..100.png（全宽底栏条，8-bit 灰度），\n")
-            f.write("#   设备整点取图后本地读 battLevel 选对应块，eips -y %d 叠加（无需外网回传）。\n" % BATT_TILE_Y0)
+            f.write("# 电量显示在底栏【中央】，由 CI 渲染时把设备上报的真实电量\n")
+            f.write("#   （DASH_BATT / --batt，来自设备整点取图时 POST 到 ntfy 的 battLevel）\n")
+            f.write("#   直接烧进整套 PNG（约滞后 1h，电量慢变量误差 <1%），故挂起后仍保留。\n")
             f.write("# 右下角仍显示金价（show_batt() 默认 False，不再用于电量）。\n")
-            f.write("# 状态：中央恒显示设备实时电量（无外网也能显示，不再留白）。\n")
-            f.write("# 旧链路（已弃用）：report_batt 搭车 POST -> ntfy -> batt_relay.py\n")
-            f.write("#       -> DASH_BATT/--batt -> 烧进整套 PNG（约滞后 1h，且设备→ntfy 易中断）。\n")
             f.write("# 设备端读电量：lipc-get-prop com.lab126.powerd battLevel / isCharging\n")
             f.write("#   兜底：sysfs capacity；/usr/bin/powerd_test -s\n")
             f.write("#\n")
@@ -1487,7 +1465,7 @@ if __name__ == "__main__":
             f.write("#   命令语法 eips [col] [row] \"text\"\n")
             f.write("#   col0 字形左缘 x=%d；row0 字形顶缘 y=%d；列宽 %.2f；行高 %.2f\n"
                     % (EIPS_X0, EIPS_Y0, EIPS_CELL_W, EIPS_CELL_H))
-            f.write("#   若将来要恢复设备端实时数字叠加，用这组值换算 col/row 即可。\n")
+            f.write("#   若将来要改设备端实时数字叠加，用这组值换算 col/row 即可。\n")
         # 索引文件：Kindle 抓不到目标图时可据此挑最近的一张
         with open(os.path.join(args.outdir, "index.txt"), "w", encoding="utf-8") as f:
             f.write("\n".join(names) + "\n")
