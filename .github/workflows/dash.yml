@@ -109,6 +109,7 @@ jobs:
           git rm -rf --cached . >/dev/null 2>&1 || true
           cp out/*.png out/index.txt out/batt_pos.txt out/slots.txt .
           git add -f *.png index.txt batt_pos.txt slots.txt
+          git add -f .weather_cache.json 2>/dev/null || true   # 天气缓存随图持久化，供下次兜底
           git commit -m "dash $(date -u +'%Y-%m-%dT%H:%MZ')"
           git push -f origin dash_tmp:dash
 

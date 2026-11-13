@@ -5,7 +5,7 @@ Kindle 8 (800x600) 日历 + 天气仪表盘渲染器
 数据源：Open-Meteo（免密钥）
 输出：8-bit 灰度 PNG，供 Kindle 用 eips -f -g 全屏显示
 """
-import json, urllib.request, urllib.parse, datetime, sys, os, math, glob
+import json, urllib.request, urllib.parse, datetime, sys, os, math, glob, time
 from PIL import Image, ImageDraw, ImageFont
 from lunardate import LunarDate
 
@@ -849,6 +849,45 @@ def _ensure_location():
     return LOCATION
 
 
+# 天气数据缓存：CI 每次 run 是全新容器，本地缓存不跨 run 保留；
+# 故成功时把 JSON 落盘，并由 dash.yml 随 dash 分支持久化，
+# 下次 run 若工作区无缓存则先从 jsDelivr(dash) 恢复。失败兜底用最近一次有效数据。
+WEATHER_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".weather_cache.json")
+WEATHER_CACHE_URL = "https://gcore.jsdelivr.net/gh/Leo202611/leokindle@dash/.weather_cache.json"
+
+
+def _save_weather_cache(data):
+    try:
+        with open(WEATHER_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+
+def _load_weather_cache():
+    try:
+        with open(WEATHER_CACHE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _fetch_remote_cache():
+    """从 dash 分支恢复上次成功的天气缓存（CI 无状态兜底）。"""
+    try:
+        req = urllib.request.Request(WEATHER_CACHE_URL, headers={"User-Agent": "kindle-dash/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.load(r)
+    except Exception:
+        return None
+
+
+def _weather_stub():
+    """接口彻底不可用且无缓存时的占位结构，保证渲染不崩溃。"""
+    return {"current": {"temperature_2m": None, "weather_code": None},
+            "hourly": {"time": []}, "daily": {"time": []}}
+
+
 def fetch():
     _ensure_location()
     url = ("https://api.open-meteo.com/v1/forecast?latitude=%s&longitude=%s"
@@ -856,9 +895,25 @@ def fetch():
            "&hourly=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,wind_direction_10m,precipitation_probability"
            "&daily=weather_code,temperature_2m_max,temperature_2m_min"
            "&timezone=%s&forecast_days=6" % (LOCATION["lat"], LOCATION["lon"], TZ))
-    req = urllib.request.Request(url, headers={"User-Agent": "kindle-dash/1.0"})
-    with urllib.request.urlopen(req, timeout=20) as r:
-        return json.load(r)
+    cached = _load_weather_cache() or _fetch_remote_cache()
+    last = None
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "kindle-dash/1.0"})
+            with urllib.request.urlopen(req, timeout=20) as r:
+                data = json.load(r)
+            _save_weather_cache(data)
+            return data
+        except Exception as e:
+            last = e
+            if attempt < 2:
+                time.sleep(3)
+    # 三次都失败：用缓存兜底；都没有则占位，绝不抛异常中断 CI
+    if cached:
+        sys.stderr.write("天气接口连续失败，使用最近缓存兜底: %s\n" % last)
+        return cached
+    sys.stderr.write("天气接口失败且无缓存，使用占位数据: %s\n" % last)
+    return _weather_stub()
 
 
 def pick_hourly(data, at):
@@ -1389,8 +1444,9 @@ if __name__ == "__main__":
     print("位置: %s (%s, %s) 来源=%s" % (city_label(), LOCATION.get("lat"),
           LOCATION.get("lon"), LOCATION.get("source")))
     data = fetch()
-    print("当前实况: %s°C %s" % (data["current"]["temperature_2m"],
-          WMO.get(data["current"]["weather_code"], ("?",))[0]))
+    cur0 = data.get("current") or {}
+    print("当前实况: %s°C %s" % (cur0.get("temperature_2m"),
+          WMO.get(cur0.get("weather_code"), ("?",))[0]))
 
     if args.hours > 0:
         base = datetime.datetime.now(TZLOCAL).replace(minute=0, second=0, microsecond=0)
