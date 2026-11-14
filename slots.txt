@@ -1,0 +1,52 @@
+# 待机画面固定槽位图（每次 CI 运行重新生成）
+# 命名 ss_HH_MM.png = 该小时 HH 的 MM 分钟槽位，脚注显示该槽位时刻（如 20:00）
+# 与 render.py 的 SS_SLOT_MINUTES、设备端 ss_config.sh 的 SS_SLOT_MINUTES 保持一致
+ss_00_00.png -> ss_00_00.png
+ss_01_00.png -> ss_01_00.png
+ss_02_00.png -> ss_02_00.png
+ss_03_00.png -> ss_03_00.png
+ss_04_00.png -> ss_04_00.png
+ss_05_00.png -> ss_05_00.png
+ss_06_00.png -> ss_06_00.png
+ss_07_00.png -> ss_07_00.png
+ss_08_00.png -> ss_08_00.png
+ss_09_00.png -> ss_09_00.png
+ss_10_00.png -> ss_10_00.png
+ss_11_00.png -> ss_11_00.png
+ss_12_00.png -> ss_12_00.png
+ss_13_00.png -> ss_13_00.png
+ss_14_00.png -> ss_14_00.png
+ss_15_00.png -> ss_15_00.png
+ss_16_00.png -> ss_16_00.png
+ss_17_00.png -> ss_17_00.png
+ss_18_00.png -> ss_18_00.png
+ss_19_00.png -> ss_19_00.png
+ss_20_00.png -> ss_20_00.png
+ss_21_00.png -> ss_21_00.png
+ss_22_00.png -> ss_22_00.png
+ss_23_00.png -> ss_23_00.png
+ss_00.png -> ss_00_00.png (兜底)
+ss_01.png -> ss_01_00.png (兜底)
+ss_02.png -> ss_02_00.png (兜底)
+ss_03.png -> ss_03_00.png (兜底)
+ss_04.png -> ss_04_00.png (兜底)
+ss_05.png -> ss_05_00.png (兜底)
+ss_06.png -> ss_06_00.png (兜底)
+ss_07.png -> ss_07_00.png (兜底)
+ss_08.png -> ss_08_00.png (兜底)
+ss_09.png -> ss_09_00.png (兜底)
+ss_10.png -> ss_10_00.png (兜底)
+ss_11.png -> ss_11_00.png (兜底)
+ss_12.png -> ss_12_00.png (兜底)
+ss_13.png -> ss_13_00.png (兜底)
+ss_14.png -> ss_14_00.png (兜底)
+ss_15.png -> ss_15_00.png (兜底)
+ss_16.png -> ss_16_00.png (兜底)
+ss_17.png -> ss_17_00.png (兜底)
+ss_18.png -> ss_18_00.png (兜底)
+ss_19.png -> ss_19_00.png (兜底)
+ss_20.png -> ss_20_00.png (兜底)
+ss_21.png -> ss_21_00.png (兜底)
+ss_22.png -> ss_22_00.png (兜底)
+ss_23.png -> ss_23_00.png (兜底)
+ss_latest.png -> ss_11_00.png (最近一次已发生槽位)
