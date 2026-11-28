@@ -1,0 +1,12 @@
+# 底部状态栏电量位元数据（当前设备端不读取，仅留档）。
+# 电量显示在底栏【中央】，由 CI 渲染时把设备上报的真实电量
+#   （DASH_BATT / --batt，来自设备整点取图时 POST 到 ntfy 的 battLevel）
+#   直接烧进整套 PNG（约滞后 1h，电量慢变量误差 <1%），故挂起后仍保留。
+# 右下角仍显示金价（show_batt() 默认 False，不再用于电量）。
+# 设备端读电量：lipc-get-prop com.lab126.powerd battLevel / isCharging
+#   兜底：sysfs capacity；/usr/bin/powerd_test -s
+#
+# 留档：eips 字符格实测标定值（dash_probe3 v3）
+#   命令语法 eips [col] [row] "text"
+#   col0 字形左缘 x=40；row0 字形顶缘 y=0；列宽 13.65；行高 38.70
+#   若将来要改设备端实时数字叠加，用这组值换算 col/row 即可。
